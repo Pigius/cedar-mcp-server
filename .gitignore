@@ -16,6 +16,7 @@ JOURNAL.md
 SCRATCH.md
 scratch/
 private/
+docs/
 *.private.md
 *.scratch.md
 kickoff-*.md
