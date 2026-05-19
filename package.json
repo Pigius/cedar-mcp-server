@@ -1,0 +1,46 @@
+{
+  "name": "cedar-mcp-server",
+  "version": "0.0.1",
+  "description": "MCP server for Cedar policy language — validate, authorize, format, and translate Cedar policies directly in your AI assistant",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "cedar-mcp-server": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@cedar-policy/cedar-wasm": "4.11.0",
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "cedar",
+    "mcp",
+    "model-context-protocol",
+    "authorization",
+    "policy",
+    "aws",
+    "verified-permissions"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Pigius/cedar-mcp-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Pigius/cedar-mcp-server/issues"
+  },
+  "homepage": "https://github.com/Pigius/cedar-mcp-server#readme"
+}
