@@ -43,7 +43,7 @@ describe("cedar_explain", () => {
 
   it("7.3 — ABAC with optional attribute guard", async () => {
     const result = await handleExplain({
-      policy: `permit (principal, action in [DocMgmt::Action::"read"], resource)
+      policy: `permit (principal, action in [DocMgmt::Action::"READ"], resource)
         when {
           principal.name == "service_x" &&
           resource has tag &&
@@ -54,7 +54,7 @@ describe("cedar_explain", () => {
 
     expect(result.effect).toBe("permit");
     expect(result.principal.description).toContain("any principal");
-    expect(result.action.description).toContain("read");
+    expect(result.action.description).toContain("READ");
     expect(result.conditions.length).toBeGreaterThan(0);
     expect(result.conditions[0]!.text).toContain("AND");
     expect(result.patterns_detected).toContain("optional_attribute_guard");

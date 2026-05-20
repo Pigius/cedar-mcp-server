@@ -34,9 +34,9 @@ describe("cedar_validate", () => {
         entity Role;
         entity Document in [Folder] = { owner: String, classification: String };
         entity Folder;
-        action read appliesTo { principal: [User], resource: [Document], context: {} };
-        action write appliesTo { principal: [User], resource: [Document], context: {} };
-        action delete appliesTo { principal: [User], resource: [Document], context: {} };
+        action READ appliesTo { principal: [User], resource: [Document], context: {} };
+        action WRITE appliesTo { principal: [User], resource: [Document], context: {} };
+        action DELETE appliesTo { principal: [User], resource: [Document], context: {} };
       }
     `.trim();
 

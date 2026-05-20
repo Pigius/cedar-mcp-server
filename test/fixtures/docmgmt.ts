@@ -7,13 +7,13 @@ permit (
 
 permit (
   principal in DocMgmt::Role::"editor",
-  action in [DocMgmt::Action::"read", DocMgmt::Action::"write"],
+  action in [DocMgmt::Action::"READ", DocMgmt::Action::"WRITE"],
   resource
 );
 
 permit (
   principal in DocMgmt::Role::"viewer",
-  action == DocMgmt::Action::"read",
+  action == DocMgmt::Action::"READ",
   resource
 );
 
@@ -57,21 +57,21 @@ export const SCHEMA_JSON = {
       Folder: { memberOfTypes: [], shape: { type: "Record", attributes: {} } },
     },
     actions: {
-      read: {
+      READ: {
         appliesTo: {
           principalTypes: ["User"],
           resourceTypes: ["Document"],
           context: { type: "Record", attributes: {} },
         },
       },
-      write: {
+      WRITE: {
         appliesTo: {
           principalTypes: ["User"],
           resourceTypes: ["Document"],
           context: { type: "Record", attributes: {} },
         },
       },
-      delete: {
+      DELETE: {
         appliesTo: {
           principalTypes: ["User"],
           resourceTypes: ["Document"],

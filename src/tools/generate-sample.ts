@@ -197,7 +197,7 @@ function buildEntities(
 ): { entities: EntityPayload[]; principalId: string; actionId: string; resourceId: string } {
   const principalId = "sample-principal";
   const resourceId = "sample-resource";
-  const actionId = scope.actionId ?? "read";
+  const actionId = scope.actionId ?? "READ";
 
   const principalAttrs: Record<string, unknown> = {};
   const resourceAttrs: Record<string, unknown> = {};

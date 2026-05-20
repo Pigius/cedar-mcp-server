@@ -7,7 +7,7 @@ describe("cedar_authorize", () => {
     const result = await handleAuthorize({
       policies: POLICIES,
       principal: 'DocMgmt::User::"alice"',
-      action: 'DocMgmt::Action::"read"',
+      action: 'DocMgmt::Action::"READ"',
       resource: 'DocMgmt::Document::"doc-public"',
       entities: JSON.stringify(ENTITIES),
     });
@@ -20,7 +20,7 @@ describe("cedar_authorize", () => {
     const result = await handleAuthorize({
       policies: POLICIES,
       principal: 'DocMgmt::User::"dave"',
-      action: 'DocMgmt::Action::"read"',
+      action: 'DocMgmt::Action::"READ"',
       resource: 'DocMgmt::Document::"doc-public"',
       entities: JSON.stringify(ENTITIES),
     });
@@ -34,7 +34,7 @@ describe("cedar_authorize", () => {
     const result = await handleAuthorize({
       policies: POLICIES,
       principal: 'DocMgmt::User::"bob"',
-      action: 'DocMgmt::Action::"read"',
+      action: 'DocMgmt::Action::"READ"',
       resource: 'DocMgmt::Document::"doc-secret"',
       entities: JSON.stringify(ENTITIES),
     });
@@ -47,7 +47,7 @@ describe("cedar_authorize", () => {
     const result = await handleAuthorize({
       policies: POLICIES,
       principal: 'DocMgmt::User::"alice"',
-      action: 'DocMgmt::Action::"read"',
+      action: 'DocMgmt::Action::"READ"',
       resource: 'DocMgmt::Document::"doc-secret"',
       entities: JSON.stringify(ENTITIES),
     });
@@ -60,7 +60,7 @@ describe("cedar_authorize", () => {
     const result = await handleAuthorize({
       policies: POLICIES,
       principal: 'DocMgmt::User::"charlie"',
-      action: 'DocMgmt::Action::"read"',
+      action: 'DocMgmt::Action::"READ"',
       resource: 'DocMgmt::Document::"doc-public"',
       entities: JSON.stringify(ENTITIES),
     });
@@ -73,7 +73,7 @@ describe("cedar_authorize", () => {
     const result = await handleAuthorize({
       policies: POLICIES,
       principal: 'DocMgmt::User::"alice"',
-      action: 'DocMgmt::Action::"read"',
+      action: 'DocMgmt::Action::"READ"',
       resource: 'DocMgmt::Document::"doc-public"',
       entities: JSON.stringify(ENTITIES),
       schema: JSON.stringify(SCHEMA_JSON),

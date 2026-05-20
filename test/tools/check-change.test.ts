@@ -28,8 +28,8 @@ describe("cedar_check_policy_change", () => {
 
   it("4.3 — resource change requires recreate", async () => {
     const result = await handleCheckChange({
-      old_policy: `permit(principal, action == MyApp::Action::"read", resource == MyApp::Document::"doc-A");`,
-      new_policy: `permit(principal, action == MyApp::Action::"read", resource == MyApp::Document::"doc-B");`,
+      old_policy: `permit(principal, action == MyApp::Action::"READ", resource == MyApp::Document::"doc-A");`,
+      new_policy: `permit(principal, action == MyApp::Action::"READ", resource == MyApp::Document::"doc-B");`,
     });
 
     expect(result.can_update_in_place).toBe(false);
@@ -40,8 +40,8 @@ describe("cedar_check_policy_change", () => {
 
   it("4.4 — action change is in-place OK", async () => {
     const result = await handleCheckChange({
-      old_policy: `permit(principal in MyApp::Role::"editor", action == MyApp::Action::"read", resource);`,
-      new_policy: `permit(principal in MyApp::Role::"editor", action in [MyApp::Action::"read", MyApp::Action::"write"], resource);`,
+      old_policy: `permit(principal in MyApp::Role::"editor", action == MyApp::Action::"READ", resource);`,
+      new_policy: `permit(principal in MyApp::Role::"editor", action in [MyApp::Action::"READ", MyApp::Action::"WRITE"], resource);`,
     });
 
     expect(result.can_update_in_place).toBe(true);
@@ -66,12 +66,12 @@ describe("cedar_check_policy_change", () => {
     const result = await handleCheckChange({
       old_policy: `permit(
         principal in MyApp::Role::"old_role",
-        action == MyApp::Action::"read",
+        action == MyApp::Action::"READ",
         resource
       ) when { resource.status == "active" };`,
       new_policy: `permit(
         principal in MyApp::Role::"new_role",
-        action in [MyApp::Action::"read", MyApp::Action::"write"],
+        action in [MyApp::Action::"READ", MyApp::Action::"WRITE"],
         resource
       ) when { resource.status == "active" || resource.status == "pending" };`,
     });
@@ -83,7 +83,7 @@ describe("cedar_check_policy_change", () => {
   });
 
   it("4.7 — identical policies: no changes, can update in place", async () => {
-    const policy = `permit(principal in MyApp::Role::"viewer", action == MyApp::Action::"read", resource);`;
+    const policy = `permit(principal in MyApp::Role::"viewer", action == MyApp::Action::"READ", resource);`;
     const result = await handleCheckChange({ old_policy: policy, new_policy: policy });
 
     expect(result.can_update_in_place).toBe(true);

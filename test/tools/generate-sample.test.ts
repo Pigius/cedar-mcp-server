@@ -30,7 +30,7 @@ const ABAC_SCHEMA = JSON.stringify({
       },
     },
     actions: {
-      read: {
+      READ: {
         appliesTo: {
           principalTypes: ["User"],
           resourceTypes: ["Resource"],
@@ -59,7 +59,7 @@ describe("cedar_generate_sample_request", () => {
     const result = await handleGenerateSample({
       policy: `permit(
         principal,
-        action in [MyApp::Action::"read"],
+        action in [MyApp::Action::"READ"],
         resource
       ) when {
         principal.name == "service_x" &&
@@ -82,7 +82,7 @@ describe("cedar_generate_sample_request", () => {
     const result = await handleGenerateSample({
       policy: `permit(
         principal,
-        action in [MyApp::Action::"read"],
+        action in [MyApp::Action::"READ"],
         resource
       ) when {
         principal.name == "service_x" &&
@@ -102,7 +102,7 @@ describe("cedar_generate_sample_request", () => {
     const result = await handleGenerateSample({
       policy: `permit(
         principal,
-        action in [MyApp::Action::"read"],
+        action in [MyApp::Action::"READ"],
         resource
       ) when {
         principal.name == "service_x" &&
@@ -123,7 +123,7 @@ describe("cedar_generate_sample_request", () => {
     const result = await handleGenerateSample({
       policy: `permit(
         principal,
-        action in [MyApp::Action::"read"],
+        action in [MyApp::Action::"READ"],
         resource
       ) when {
         principal.name == "service_x" &&
