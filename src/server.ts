@@ -4,6 +4,7 @@ import { z } from "zod";
 import { handleAuthorize } from "./tools/authorize.js";
 import { handleValidate } from "./tools/validate.js";
 import { handleValidateSchema } from "./tools/validate-schema.js";
+import { handleDiffSchema } from "./tools/diff-schema.js";
 import { handleFormat } from "./tools/format.js";
 import { handleTranslate } from "./tools/translate.js";
 import { handleExplainMany } from "./tools/explain.js";
@@ -194,6 +195,31 @@ export function createServer(): McpServer {
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
+    }
+  );
+
+  server.tool(
+    "cedar_diff_schema",
+    "Structural diff of two Cedar schemas with AVP-aware risk classification per change. Each side accepts inline schema text (JSON or .cedarschema) OR a cedar://schema/{store} URI. Returns added/removed/modified entity types, actions, and common types, each tagged safe/review/breaking with a reason.",
+    {
+      blue: z.string().describe("Blue (baseline) schema — inline schema text or cedar://schema/{store} URI"),
+      green: z.string().describe("Green (proposed) schema — inline schema text or cedar://schema/{store} URI"),
+    },
+    async (input) => {
+      let blue = input.blue;
+      let green = input.green;
+      if (blue.startsWith("cedar://")) {
+        const resolved = resolveRef(blue);
+        if ("error" in resolved) return { content: [{ type: "text", text: JSON.stringify({ error: `blue: ${resolved.error}` }) }] };
+        blue = resolved.content;
+      }
+      if (green.startsWith("cedar://")) {
+        const resolved = resolveRef(green);
+        if ("error" in resolved) return { content: [{ type: "text", text: JSON.stringify({ error: `green: ${resolved.error}` }) }] };
+        green = resolved.content;
+      }
+      const result = await handleDiffSchema({ blue, green });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
   );
 
