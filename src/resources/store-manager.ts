@@ -27,15 +27,25 @@ export class StoreManager {
 
   loadFromRoots(roots: Array<{ uri: string; name?: string }>): void {
     this.stores.clear();
+    const usedNames = new Map<string, number>(); // tracks how many times each base name is used
+
     for (const root of roots) {
       if (!root.uri.startsWith("file://")) {
-        // Non-file:// URIs are not supported. Log and skip rather than silently
-        // accepting a URI that would produce wrong results at access time.
         console.error(`[cedar-mcp-server] Skipping unsupported root URI scheme: ${root.uri} (only file:// is supported)`);
         continue;
       }
       const rawPath = root.uri.replace(/^file:\/\//, "").replace(/\/$/, "");
-      const name = root.name ?? basename(rawPath) ?? "default";
+      const baseName = root.name ?? basename(rawPath) ?? "default";
+
+      // Disambiguate collisions with a numeric suffix
+      const count = usedNames.get(baseName) ?? 0;
+      usedNames.set(baseName, count + 1);
+      const name = count === 0 ? baseName : `${baseName}-${count + 1}`;
+
+      if (count > 0) {
+        console.error(`[cedar-mcp-server] Store name collision: "${baseName}" is used by multiple roots. Renamed to "${name}". Consider giving roots explicit names.`);
+      }
+
       this.stores.set(name, { name, uri: root.uri, path: rawPath });
     }
   }

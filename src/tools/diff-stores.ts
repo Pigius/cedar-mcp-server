@@ -21,9 +21,10 @@ export interface BehavioralDriftEntry {
   principal: string;
   action: string;
   resource: string;
-  blue_decision: "Allow" | "Deny";
-  green_decision: "Allow" | "Deny";
+  blue_decision: "Allow" | "Deny" | "Error";
+  green_decision: "Allow" | "Deny" | "Error";
   drifted: boolean;
+  error?: string;
 }
 
 export interface DiffStoresResult {
@@ -204,17 +205,34 @@ async function runBehavioralDiff(
     const actionRef = normalizePrincipalRef(req.action);
     const resourceRef = normalizePrincipalRef(req.resource);
 
-    if ("error" in principalRef || "error" in actionRef || "error" in resourceRef) continue;
+    const refError =
+      ("error" in principalRef ? principalRef.error : null) ??
+      ("error" in actionRef ? actionRef.error : null) ??
+      ("error" in resourceRef ? resourceRef.error : null);
+
+    const principalStr = typeof req.principal === "string" ? req.principal : JSON.stringify(req.principal);
+    const actionStr = typeof req.action === "string" ? req.action : JSON.stringify(req.action);
+    const resourceStr = typeof req.resource === "string" ? req.resource : JSON.stringify(req.resource);
+
+    if (refError) {
+      entries.push({ principal: principalStr, action: actionStr, resource: resourceStr, blue_decision: "Error", green_decision: "Error", drifted: false, error: refError });
+      continue;
+    }
 
     let entities: Entities;
     try {
       entities = JSON.parse(req.entities);
     } catch {
+      entries.push({ principal: principalStr, action: actionStr, resource: resourceStr, blue_decision: "Error", green_decision: "Error", drifted: false, error: "Invalid entities JSON" });
       continue;
     }
 
+    // After the refError guard above, refs are guaranteed to be NormalizedRef (no error field)
+    const safeP = principalRef as { type: string; id: string };
+    const safeA = actionRef as { type: string; id: string };
+    const safeR = resourceRef as { type: string; id: string };
     const context = {};
-    const callBase = { principal: principalRef, action: actionRef, resource: resourceRef, context, entities };
+    const callBase = { principal: safeP, action: safeA, resource: safeR, context, entities };
 
     const blueAnswer = isAuthorized({ ...callBase, policies: { staticPolicies: bluePolicies } });
     const greenAnswer = isAuthorized({ ...callBase, policies: { staticPolicies: greenPolicies } });
@@ -225,9 +243,9 @@ async function runBehavioralDiff(
       greenAnswer.type === "success" && greenAnswer.response.decision === "allow" ? "Allow" : "Deny";
 
     entries.push({
-      principal: typeof req.principal === "string" ? req.principal : JSON.stringify(req.principal),
-      action: typeof req.action === "string" ? req.action : JSON.stringify(req.action),
-      resource: typeof req.resource === "string" ? req.resource : JSON.stringify(req.resource),
+      principal: principalStr,
+      action: actionStr,
+      resource: resourceStr,
       blue_decision: blueDecision,
       green_decision: greenDecision,
       drifted: blueDecision !== greenDecision,

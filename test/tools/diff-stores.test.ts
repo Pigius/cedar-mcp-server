@@ -170,6 +170,35 @@ describe("cedar_diff_policy_stores", () => {
     expect(result.schema_changed).toBe(true);
   });
 
+  it("behavioral diff — reports invalid requests instead of silently skipping", async () => {
+    const bluePath = makeStore(tmpDir, "blue", { admin: ADMIN_POLICY });
+    const greenPath = makeStore(tmpDir, "green", { admin: ADMIN_POLICY });
+    manager.loadFromRoots([
+      { uri: `file://${bluePath}`, name: "blue" },
+      { uri: `file://${greenPath}`, name: "green" },
+    ]);
+
+    const result = await handleDiffStores({
+      blue: "blue",
+      green: "green",
+      behavioral_test_requests: JSON.stringify([
+        {
+          principal: "bad-format-no-colons",  // invalid
+          action: 'DocMgmt::Action::"READ"',
+          resource: 'DocMgmt::Document::"d1"',
+          entities: "[]",
+        },
+      ]),
+    }, manager);
+
+    // Invalid requests should appear in behavioral_diff with drifted:false and an error note
+    // NOT silently disappear from the results
+    expect(result.behavioral_diff).toBeDefined();
+    expect(result.behavioral_diff!.length).toBe(1);
+    expect(result.behavioral_diff![0]!.drifted).toBe(false);
+    expect(result.behavioral_diff![0]!.blue_decision).toBe("Error");
+  });
+
   it("returns error for unknown store name", async () => {
     const bluePath = makeStore(tmpDir, "blue", { admin: ADMIN_POLICY });
     manager.loadFromRoots([{ uri: `file://${bluePath}`, name: "blue" }]);

@@ -169,6 +169,22 @@ describe("StoreManager", () => {
       expect(manager.listStoreNames()).not.toContain("remote");
     });
 
+    it("disambiguates store names when two roots share the same last path segment", () => {
+      // Two different paths but same last segment — should NOT silently overwrite
+      mkdirSync(join(tmpDir, "team-a", "production", "policies"), { recursive: true });
+      mkdirSync(join(tmpDir, "team-b", "production", "policies"), { recursive: true });
+      writeFileSync(join(tmpDir, "team-a", "production", "schema.cedarschema"), "namespace A {}");
+      writeFileSync(join(tmpDir, "team-b", "production", "schema.cedarschema"), "namespace B {}");
+
+      manager.loadFromRoots([
+        { uri: `file://${tmpDir}/team-a/production` },
+        { uri: `file://${tmpDir}/team-b/production` },
+      ]);
+
+      // Both stores must survive — with disambiguated names
+      expect(manager.listStoreNames().length).toBe(2);
+    });
+
     it("rejects policy IDs with path traversal characters", () => {
       const storePath = createTestStore(tmpDir, "blue");
       manager.loadFromRoots([{ uri: `file://${storePath}`, name: "blue" }]);
