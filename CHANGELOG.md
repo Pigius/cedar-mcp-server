@@ -9,10 +9,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). This pr
 ## [Unreleased]
 
 ### Added
-- Snippet validation in `cedar_advise`: LLM-generated Cedar snippets are now validated via `policyToJson` before return. Snippets that fail to parse are surfaced as high-severity gotchas (`invalid_cedar_snippet_in_plan`) rather than passed through silently.
-- Integration smoke test: end-to-end test spawning the server via stdio and exercising `cedar_validate` and `cedar_authorize` through a real MCP client transport.
-- Full README rewrite: hero pitch, PLAN/DIFF/APPLY workflow narrative, all 9 tool detail sections, MCP Roots setup guide, Coming from AVP/cedar-cli/fresh-to-Cedar sections, troubleshooting, compatibility table, versioning policy.
-- `CONTRIBUTING.md` and `CHANGELOG.md`.
+
+#### Template operations (Batch A)
+- `cedar_validate_template`: validates a Cedar policy template (static template text) against a schema; supports both cedarschema and JSON schema formats.
+- `cedar_link_template`: links a policy template to a concrete principal and resource, producing a template-linked policy in the store.
+- `cedar_list_templates`: lists all policy templates in a store; per-item read errors surface as structured errors rather than throwing.
+- `cedar_list_template_links`: lists all template-linked policies in a store; per-item read errors surface as structured errors rather than throwing.
+- `StoreManager` extended with `listTemplates`, `readTemplate`, `listTemplateLinks`, and `readTemplateLink` methods.
+- New MCP Resources: `cedar://templates/{store}`, `cedar://templates/{store}/{id}`, `cedar://template-links/{store}`, `cedar://template-links/{store}/{id}`.
+- `SECURITY.md` added to the repository.
+
+#### Schema and entity standalone operations (Batch B)
+- `cedar_validate_schema`: standalone schema validation accepting JSON or cedarschema text; returns validity flag, detected format, namespace list, entity/action counts, and errors with source locations.
+- `cedar_diff_schema`: structural schema diff with AVP-aware risk classification; each change is classified as `safe`, `review`, or `breaking` with a reason; accepts inline schema text or `cedar://schema/{store}` URIs.
+- `cedar_validate_entities`: validates an entity store against a schema; classifies errors by kind (`unknown_type`, `missing_required_attribute`, `type_mismatch`, `unknown_attribute`, `disallowed_parent_type`, `parse_error`, `other`).
+
+### Changed
+- `cedar_diff_policy_stores`: `schema_diff` field is now a structured `SchemaDiff` object (with per-change risk classification) replacing the previous `schema_changed: boolean` + `schema_diff_note: string` fields.
+
+### Fixed
+- `cedar_validate_entities`: removed incorrect `orphan_parent` error kind (no such Cedar concept); added `disallowed_parent_type` recognition that previously fell through to `error_kind: "other"`.
 
 ---
 
