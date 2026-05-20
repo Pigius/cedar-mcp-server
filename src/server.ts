@@ -503,6 +503,37 @@ export function createServer(): McpServer {
     }
   );
 
+  // List entity files in a store: cedar://entities/{store}
+  server.resource(
+    "cedar-entities-list",
+    new ResourceTemplate("cedar://entities/{store}", { list: undefined }),
+    async (_uri, variables) => {
+      const storeName = variables["store"] as string;
+      try {
+        const ids = storeManager.listEntities(storeName);
+        return { contents: [{ uri: `cedar://entities/${storeName}`, mimeType: "application/json", text: JSON.stringify(ids) }] };
+      } catch (e) {
+        return { contents: [{ uri: `cedar://entities/${storeName}`, mimeType: "application/json", text: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }) }] };
+      }
+    }
+  );
+
+  // Read a single entity file: cedar://entities/{store}/{file_id}
+  server.resource(
+    "cedar-entities",
+    new ResourceTemplate("cedar://entities/{store}/{file_id}", { list: undefined }),
+    async (uri, variables) => {
+      const storeName = variables["store"] as string;
+      const fileId = variables["file_id"] as string;
+      try {
+        const content = storeManager.readEntities(storeName, fileId);
+        return { contents: [{ uri: uri.toString(), mimeType: "application/json", text: content }] };
+      } catch (e) {
+        return { contents: [{ uri: uri.toString(), mimeType: "application/json", text: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }) }] };
+      }
+    }
+  );
+
   // ─── MCP Prompts: pre-canned templates the client surfaces as slash commands ──
 
   for (const p of PROMPT_DEFINITIONS) {
