@@ -277,6 +277,31 @@ function extractScope(json: PolicyJson, schemaNamespace: string, schemaJson?: un
 
 // ─── Entity building ──────────────────────────────────────────────────────────
 
+/**
+ * Pick a default action id when the policy scope doesn't specify one.
+ *
+ * The previous fallback was a hardcoded `"READ"` (uppercase) which mismatched
+ * schemas declaring lowercase action keys (e.g. `actions: { read: { ... } }`).
+ * Cedar's request validator then rejected the request because `Action::"READ"`
+ * isn't declared, causing a default-deny that contradicted the generator's
+ * own `decision: "Allow"` self-report. Caught by e2e behavior test B3.
+ *
+ * Now: read the first action key from the schema's namespace.actions map.
+ * Fall back to "read" (lowercase, matching the Cedar/AVP convention from
+ * docs.cedarpolicy.com examples) only when no schema is supplied.
+ */
+function defaultActionIdFromSchema(schemaJson: unknown, namespace: string): string {
+  try {
+    const ns = (schemaJson as Record<string, unknown>)?.[namespace] as Record<string, unknown> | undefined;
+    const actions = ns?.["actions"] as Record<string, unknown> | undefined;
+    if (actions) {
+      const keys = Object.keys(actions);
+      if (keys.length > 0) return keys[0]!;
+    }
+  } catch { /* fall through */ }
+  return "read";
+}
+
 function buildEntities(
   scope: ScopeInfo,
   constraints: AttributeConstraint[],
@@ -287,7 +312,7 @@ function buildEntities(
 ): { entities: EntityPayload[]; principalId: string; actionId: string; resourceId: string } {
   const principalId = "sample-principal";
   const resourceId = "sample-resource";
-  const actionId = scope.actionId ?? "READ";
+  const actionId = scope.actionId ?? defaultActionIdFromSchema(schemaJson, schemaNamespace);
 
   // Seed required attributes from schema so validateRequest: true doesn't fail on missing fields.
   // Condition-derived values (eq, has, contains, like) overwrite these defaults below.
