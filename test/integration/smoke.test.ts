@@ -135,7 +135,7 @@ describe("integration smoke", () => {
     transport = undefined;
   });
 
-  it("S1 — server lists all 9 tools", async () => {
+  it("S1 — server lists all 17 tools", async () => {
     const conn = makeClient();
     client = conn.client;
     transport = conn.transport;
@@ -146,6 +146,7 @@ describe("integration smoke", () => {
 
     expect(names).toContain("cedar_validate");
     expect(names).toContain("cedar_authorize");
+    expect(names).toContain("cedar_authorize_batch");
     expect(names).toContain("cedar_format");
     expect(names).toContain("cedar_translate");
     expect(names).toContain("cedar_explain");
@@ -157,7 +158,10 @@ describe("integration smoke", () => {
     expect(names).toContain("cedar_link_template");
     expect(names).toContain("cedar_list_templates");
     expect(names).toContain("cedar_list_template_links");
-    expect(names).toHaveLength(13);
+    expect(names).toContain("cedar_validate_schema");
+    expect(names).toContain("cedar_diff_schema");
+    expect(names).toContain("cedar_validate_entities");
+    expect(names).toHaveLength(17);
   }, 15_000);
 
   it("S2 — cedar_validate returns valid:true for correct policy + schema", async () => {

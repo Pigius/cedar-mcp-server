@@ -16,7 +16,9 @@
   },
   "dependencies": {
     "@cedar-policy/cedar-wasm": "4.11.0",
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@types/express": "^5.0.6",
+    "express": "^5.2.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
