@@ -6,6 +6,7 @@ import { handleFormat } from "./tools/format.js";
 import { handleTranslate } from "./tools/translate.js";
 import { handleExplain } from "./tools/explain.js";
 import { handleCheckChange } from "./tools/check-change.js";
+import { handleGenerateSample } from "./tools/generate-sample.js";
 
 export const SERVER_NAME = "cedar-mcp-server";
 export const SERVER_VERSION = "0.0.1";
@@ -107,6 +108,22 @@ export function createServer(): McpServer {
     },
     async (input) => {
       const result = await handleCheckChange(input);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    }
+  );
+
+  server.tool(
+    "cedar_generate_sample_request",
+    "Generate a complete Cedar authorization request (principal, action, resource, entities) that will be allowed or denied by the given policy. Pass the result directly to cedar_authorize to verify.",
+    {
+      policy: z.string().describe("Cedar policy text (single policy)"),
+      schema: z.string().describe("Cedar schema (JSON or .cedarschema format)"),
+      target_decision: z.enum(["allow", "deny"]).describe("Generate a request that will be allowed or denied"),
+    },
+    async (input) => {
+      const result = await handleGenerateSample(input);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
