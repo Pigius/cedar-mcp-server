@@ -16,13 +16,16 @@ import type { PolicyJson, Clause, Expr } from "@cedar-policy/cedar-wasm/nodejs";
 // ─── Scope description ───────────────────────────────────────────────────────
 
 export function describePrincipal(principal: PolicyJson["principal"]): string {
+  // Check for slot first — applies to both "==" and "in" ops in templates
+  if ("slot" in principal) {
+    const slot = (principal as Record<string, unknown>)["slot"] as string;
+    return `principal bound to slot ${slot}`;
+  }
   switch (principal.op) {
     case "All":
       return "any principal";
     case "==": {
       const e = "entity" in principal ? principal.entity : null;
-      const s = "slot" in principal ? principal.slot : null;
-      if (s) return `principal bound to slot ${s}`;
       if (e && "type" in e) return `exactly ${e.type}::"${e.id}"`;
       return "exactly (unknown)";
     }
@@ -167,9 +170,13 @@ export function detectPatterns(json: PolicyJson): string[] {
   if (json.effect === "forbid") patterns.push("forbid_policy");
 
   // Principal scope patterns
-  if (json.principal.op === "in") patterns.push("role_based_access");
+  const principalHasSlot = "slot" in json.principal;
+  if (principalHasSlot) {
+    patterns.push("template_policy", "slot_principal");
+  } else if (json.principal.op === "in") {
+    patterns.push("role_based_access");
+  }
   if (json.principal.op === "All") patterns.push("any_principal");
-  if (json.principal.op === "==" && "slot" in json.principal) patterns.push("template_policy", "slot_principal");
 
   // Action scope patterns
   if (json.action.op === "All") patterns.push("unrestricted_action");
