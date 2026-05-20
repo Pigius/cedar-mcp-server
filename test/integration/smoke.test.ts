@@ -153,7 +153,11 @@ describe("integration smoke", () => {
     expect(names).toContain("cedar_generate_sample_request");
     expect(names).toContain("cedar_advise");
     expect(names).toContain("cedar_diff_policy_stores");
-    expect(names).toHaveLength(9);
+    expect(names).toContain("cedar_validate_template");
+    expect(names).toContain("cedar_link_template");
+    expect(names).toContain("cedar_list_templates");
+    expect(names).toContain("cedar_list_template_links");
+    expect(names).toHaveLength(13);
   }, 15_000);
 
   it("S2 — cedar_validate returns valid:true for correct policy + schema", async () => {

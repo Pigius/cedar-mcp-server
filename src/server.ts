@@ -10,6 +10,10 @@ import { handleCheckChange } from "./tools/check-change.js";
 import { handleGenerateSample } from "./tools/generate-sample.js";
 import { handleDiffStores } from "./tools/diff-stores.js";
 import { handleAdvise, type Sampler } from "./tools/advise.js";
+import { handleValidateTemplate } from "./tools/validate-template.js";
+import { handleLinkTemplate } from "./tools/link-template.js";
+import { handleListTemplates } from "./tools/list-templates.js";
+import { handleListTemplateLinks } from "./tools/list-template-links.js";
 import { storeManager } from "./resources/store-manager.js";
 import { resolveRef } from "./resources/ref-resolver.js";
 
@@ -213,6 +217,58 @@ export function createServer(): McpServer {
     }
   );
 
+  server.tool(
+    "cedar_validate_template",
+    "Validate a Cedar template policy against a schema. Templates use slot placeholders (?principal, ?resource) that are bound when the template is linked. Returns validation errors, warnings, and detected slots.",
+    {
+      template: z.string().describe("Cedar template text — may contain ?principal and/or ?resource slot placeholders"),
+      schema: z.string().describe("Cedar schema (JSON or .cedarschema format)"),
+    },
+    async (input) => {
+      const result = await handleValidateTemplate(input);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  server.tool(
+    "cedar_link_template",
+    "Instantiate a Cedar template by binding its ?principal and/or ?resource slots to specific entity references. Returns the linked Cedar policy text. Optionally validates the result against a schema.",
+    {
+      template: z.string().describe("Cedar template text with ?principal and/or ?resource slots"),
+      principal: z.string().optional().describe('Entity reference for the ?principal slot, e.g. App::User::"alice"'),
+      resource: z.string().optional().describe('Entity reference for the ?resource slot, e.g. App::Document::"doc-42"'),
+      schema: z.string().optional().describe("Cedar schema (JSON or .cedarschema) — if provided, the linked policy is validated against it"),
+    },
+    async (input) => {
+      const result = await handleLinkTemplate(input);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  server.tool(
+    "cedar_list_templates",
+    "List all Cedar template policies in a policy store configured via MCP Roots. Templates live in the templates/ subdirectory of the store root. Returns template IDs, content, and detected slot placeholders.",
+    {
+      store: z.string().describe("Store name (must be a configured MCP root)"),
+    },
+    async (input) => {
+      const result = await handleListTemplates(input, storeManager);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  server.tool(
+    "cedar_list_template_links",
+    "List all template-linked policy instances in a policy store configured via MCP Roots. Links live in the template-links/ subdirectory. Each link records which template it uses and the slot values bound to it.",
+    {
+      store: z.string().describe("Store name (must be a configured MCP root)"),
+    },
+    async (input) => {
+      const result = await handleListTemplateLinks(input, storeManager);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
   // ─── MCP Resources: cedar:// URI scheme ────────────────────────────────────
 
   // List all policy IDs in a store: cedar://policies/{store}
@@ -293,6 +349,68 @@ export function createServer(): McpServer {
             text: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }),
           }],
         };
+      }
+    }
+  );
+
+  // List all template IDs in a store: cedar://templates/{store}
+  server.resource(
+    "cedar-templates-list",
+    new ResourceTemplate("cedar://templates/{store}", { list: undefined }),
+    async (_uri, variables) => {
+      const storeName = variables["store"] as string;
+      try {
+        const ids = storeManager.listTemplates(storeName);
+        return { contents: [{ uri: `cedar://templates/${storeName}`, mimeType: "application/json", text: JSON.stringify(ids) }] };
+      } catch (e) {
+        return { contents: [{ uri: `cedar://templates/${storeName}`, mimeType: "application/json", text: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }) }] };
+      }
+    }
+  );
+
+  // Read a single template: cedar://templates/{store}/{template_id}
+  server.resource(
+    "cedar-template",
+    new ResourceTemplate("cedar://templates/{store}/{template_id}", { list: undefined }),
+    async (uri, variables) => {
+      const storeName = variables["store"] as string;
+      const templateId = variables["template_id"] as string;
+      try {
+        const content = storeManager.readTemplate(storeName, templateId);
+        return { contents: [{ uri: uri.toString(), mimeType: "text/plain", text: content }] };
+      } catch (e) {
+        return { contents: [{ uri: uri.toString(), mimeType: "application/json", text: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }) }] };
+      }
+    }
+  );
+
+  // List all template link IDs: cedar://template-links/{store}
+  server.resource(
+    "cedar-template-links-list",
+    new ResourceTemplate("cedar://template-links/{store}", { list: undefined }),
+    async (_uri, variables) => {
+      const storeName = variables["store"] as string;
+      try {
+        const ids = storeManager.listTemplateLinks(storeName);
+        return { contents: [{ uri: `cedar://template-links/${storeName}`, mimeType: "application/json", text: JSON.stringify(ids) }] };
+      } catch (e) {
+        return { contents: [{ uri: `cedar://template-links/${storeName}`, mimeType: "application/json", text: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }) }] };
+      }
+    }
+  );
+
+  // Read a single template link: cedar://template-links/{store}/{link_id}
+  server.resource(
+    "cedar-template-link",
+    new ResourceTemplate("cedar://template-links/{store}/{link_id}", { list: undefined }),
+    async (uri, variables) => {
+      const storeName = variables["store"] as string;
+      const linkId = variables["link_id"] as string;
+      try {
+        const data = storeManager.readTemplateLink(storeName, linkId);
+        return { contents: [{ uri: uri.toString(), mimeType: "application/json", text: JSON.stringify(data, null, 2) }] };
+      } catch (e) {
+        return { contents: [{ uri: uri.toString(), mimeType: "application/json", text: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }) }] };
       }
     }
   );

@@ -30,6 +30,15 @@ Nine tools across three categories:
 | [`cedar_generate_sample_request`](#cedar_generate_sample_request) | Generates a complete authorization request payload that produces a target decision |
 | [`cedar_advise`](#cedar_advise) | Translates a natural-language intent into a step-by-step Cedar policy change plan (uses MCP sampling) |
 
+**Templates** — author, validate, instantiate, and inspect Cedar template-linked policies.
+
+| Tool | What it does |
+|------|-------------|
+| [`cedar_validate_template`](#cedar_validate_template) | Validates a Cedar template against a schema; detects slot placeholders |
+| [`cedar_link_template`](#cedar_link_template) | Instantiates a template by binding `?principal` and `?resource` slots to specific entity references |
+| [`cedar_list_templates`](#cedar_list_templates) | Lists all templates in a policy store (reads from `templates/` subdirectory) |
+| [`cedar_list_template_links`](#cedar_list_template_links) | Lists all template-linked policy instances in a store (reads from `template-links/` subdirectory) |
+
 **Diffing** — compare two policy stores before promoting changes to production.
 
 | Tool | What it does |
@@ -462,6 +471,152 @@ Translates a natural-language description of an authorization intent into a step
 
 ---
 
+### `cedar_validate_template`
+
+Validates a Cedar template policy against a schema. Templates use slot placeholders (`?principal`, `?resource`) that are bound when the template is instantiated.
+
+**Inputs:**
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `template` | yes | Cedar template text, e.g. `permit(principal == ?principal, action == ..., resource == ?resource);` |
+| `schema` | yes | Cedar schema (JSON or `.cedarschema` format) |
+
+**Output shape:**
+
+```json
+{
+  "valid": true,
+  "errors": [],
+  "warnings": [],
+  "slots_detected": ["?principal", "?resource"]
+}
+```
+
+**When to use:** after writing a new template, before adding it to your policy store. Also use to discover which slots a template exposes before calling `cedar_link_template`.
+
+---
+
+### `cedar_link_template`
+
+Instantiates a Cedar template by binding its `?principal` and/or `?resource` slots to specific entity references. Returns the resulting Cedar policy text.
+
+**Inputs:**
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `template` | yes | Cedar template text |
+| `principal` | no | Entity reference for the `?principal` slot, e.g. `App::User::"alice"` |
+| `resource` | no | Entity reference for the `?resource` slot, e.g. `App::Document::"doc-42"` |
+| `schema` | no | Cedar schema; if provided, the linked policy is validated against it |
+
+**Output shape:**
+
+```json
+{
+  "linked_policy": "permit(principal == App::User::\"alice\", action == App::Action::\"read\", resource == App::Document::\"doc-42\");",
+  "slots_bound": {
+    "?principal": "App::User::\"alice\"",
+    "?resource": "App::Document::\"doc-42\""
+  },
+  "valid": true,
+  "errors": []
+}
+```
+
+**Note:** entity reference format is `Namespace::Type::"id"` — same as `cedar_authorize` principal/resource parameters.
+
+**When to use:** instantiating a template for a specific principal-resource pair before deploying to AVP via `CreatePolicy` (template-linked variant).
+
+---
+
+### `cedar_list_templates`
+
+Lists all Cedar template policies in a policy store. Templates live in a `templates/` subdirectory of the store root, following the same layout convention as `policies/`.
+
+**Store layout with templates:**
+
+```
+my-store/
+  policies/
+    admin.cedar
+  templates/
+    viewer-access.cedar    <- permit(principal == ?principal, action == ..., resource == ?resource);
+    editor-access.cedar
+  template-links/
+    alice-docs.json        <- { "template_id": "viewer-access", "slot_values": { ... } }
+  schema.cedarschema
+```
+
+**Inputs:**
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `store` | yes | Store name (must be a configured MCP root) |
+
+**Output shape:**
+
+```json
+{
+  "store": "production",
+  "templates": [
+    {
+      "id": "viewer-access",
+      "content": "permit(principal == ?principal, ...);",
+      "slots": ["?principal", "?resource"]
+    }
+  ]
+}
+```
+
+**When to use:** discovering what templates exist in a store before instantiating or diffing them.
+
+---
+
+### `cedar_list_template_links`
+
+Lists all template-linked policy instances in a store. Links live in a `template-links/` subdirectory. Each link is a JSON file recording which template it uses and the slot values bound to it.
+
+**Template link file format** (`template-links/alice-docs.json`):
+
+```json
+{
+  "template_id": "viewer-access",
+  "slot_values": {
+    "?principal": "App::User::\"alice\"",
+    "?resource": "App::Document::\"doc-42\""
+  }
+}
+```
+
+**Inputs:**
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `store` | yes | Store name (must be a configured MCP root) |
+
+**Output shape:**
+
+```json
+{
+  "store": "production",
+  "links": [
+    {
+      "id": "alice-docs",
+      "template_id": "viewer-access",
+      "slot_values": {
+        "?principal": "App::User::\"alice\"",
+        "?resource": "App::Document::\"doc-42\""
+      }
+    }
+  ]
+}
+```
+
+**When to use:** auditing which principal-resource pairs are covered by template-linked policies in a store, or diffing link coverage before a deployment.
+
+---
+
 ### `cedar_diff_policy_stores`
 
 Structural and optional behavioral diff between two policy stores. Requires MCP Roots configured (see [Setup with policy stores](#setup-with-policy-stores-mcp-roots)).
@@ -525,8 +680,12 @@ my-store/
     admin.cedar
     editor.cedar
     viewer.cedar
-  schema.cedarschema     <- Cedar schema text (preferred)
-  schema.json            <- Cedar JSON schema (alternative)
+  templates/
+    viewer-access.cedar        <- Cedar template with ?principal / ?resource slots (optional)
+  template-links/
+    alice-docs.json            <- { "template_id": "...", "slot_values": { ... } } (optional)
+  schema.cedarschema           <- Cedar schema text (preferred)
+  schema.json                  <- Cedar JSON schema (alternative)
 ```
 
 ### Configure roots in Claude Code
@@ -555,9 +714,13 @@ The root name (`"production"`, `"staging"`) becomes the store identifier used in
 Once roots are configured, use `cedar://` URIs instead of pasting policy text:
 
 ```
-cedar://policies/production           <- all policies in the production store
-cedar://policies/production/admin     <- the admin.cedar policy
-cedar://schema/production             <- the production schema
+cedar://policies/production              <- all policies in the production store
+cedar://policies/production/admin        <- the admin.cedar policy
+cedar://schema/production                <- the production schema
+cedar://templates/production             <- all templates in the production store
+cedar://templates/production/viewer-access  <- the viewer-access template
+cedar://template-links/production        <- all template-link IDs in the store
+cedar://template-links/production/alice-docs  <- a specific link's metadata
 ```
 
 Both `policy_ref` and `schema_ref` accept these URIs in `cedar_validate` and `cedar_authorize`. Inline text still works — pass either form.
@@ -615,6 +778,9 @@ The Cedar project ships a CLI (`cedar`) for one-shot policy operations. This MCP
 | Generate a test request payload | — | `cedar_generate_sample_request` |
 | Plan a policy change from intent | — | `cedar_advise` |
 | Diff two policy stores with AVP classification | — | `cedar_diff_policy_stores` |
+| Validate a template policy | — | `cedar_validate_template` |
+| Instantiate a template (bind slots) | — | `cedar_link_template` |
+| List templates / links in a store | — | `cedar_list_templates`, `cedar_list_template_links` |
 
 **When to use the CLI:** one-shot scripts, CI pipelines, or shell automation.
 

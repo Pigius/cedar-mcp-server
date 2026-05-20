@@ -88,6 +88,55 @@ export class StoreManager {
     return ids.map((id) => this.readPolicy(storeName, id)).join("\n\n");
   }
 
+  // ─── Template access ────────────────────────────────────────────────────────
+
+  listTemplates(storeName: string): string[] {
+    const store = this.requireStore(storeName);
+    const templatesDir = join(store.path, "templates");
+    if (!existsSync(templatesDir)) return [];
+    return readdirSync(templatesDir)
+      .filter((f) => f.endsWith(".cedar"))
+      .map((f) => f.replace(/\.cedar$/, ""))
+      .sort();
+  }
+
+  readTemplate(storeName: string, templateId: string): string {
+    const store = this.requireStore(storeName);
+    if (!/^[a-zA-Z0-9_-]+$/.test(templateId)) {
+      throw new Error(`Invalid template ID: "${templateId}". Template IDs must contain only letters, digits, hyphens, and underscores.`);
+    }
+    const filePath = join(store.path, "templates", `${templateId}.cedar`);
+    if (!existsSync(filePath)) {
+      throw new Error(`Template not found: "${templateId}" in store "${storeName}"`);
+    }
+    return readFileSync(filePath, "utf8");
+  }
+
+  // ─── Template link access ────────────────────────────────────────────────────
+
+  listTemplateLinks(storeName: string): string[] {
+    const store = this.requireStore(storeName);
+    const linksDir = join(store.path, "template-links");
+    if (!existsSync(linksDir)) return [];
+    return readdirSync(linksDir)
+      .filter((f) => f.endsWith(".json"))
+      .map((f) => f.replace(/\.json$/, ""))
+      .sort();
+  }
+
+  readTemplateLink(storeName: string, linkId: string): { template_id: string; slot_values: Record<string, string> } {
+    const store = this.requireStore(storeName);
+    if (!/^[a-zA-Z0-9_-]+$/.test(linkId)) {
+      throw new Error(`Invalid link ID: "${linkId}". Link IDs must contain only letters, digits, hyphens, and underscores.`);
+    }
+    const filePath = join(store.path, "template-links", `${linkId}.json`);
+    if (!existsSync(filePath)) {
+      throw new Error(`Template link not found: "${linkId}" in store "${storeName}"`);
+    }
+    const raw = readFileSync(filePath, "utf8");
+    return JSON.parse(raw) as { template_id: string; slot_values: Record<string, string> };
+  }
+
   // ─── Schema access ──────────────────────────────────────────────────────────
 
   readSchema(storeName: string): string {
