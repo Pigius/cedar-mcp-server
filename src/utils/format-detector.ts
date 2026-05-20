@@ -1,30 +1,33 @@
 /**
  * Cedar input format detection and normalization.
  *
- * Three formats exist in the wild, with different levels of WASM compatibility:
+ * Three AVP SDK variants exist in the wild — all need conversion to Cedar WASM format:
  *
- * "cedar"     — WASM native format. uid: { type, id }, raw attribute values,
- *               Cedar string literals for principal/action/resource.
- *               → Pass through unchanged.
+ *   Ruby SDK (snake_case):   identifier.entity_type / entity_id, string/long/boolean
+ *   Python/JS SDK (camelCase): identifier.entityType / entityId, string/long/boolean
+ *   Official API/Console (PascalCase): Identifier.EntityType / EntityId, String/Long/Boolean
  *
- * "cedar_cli" — Cedar CLI entity file format. uid: { __entity: { type, id } }.
- *               WASM accepts the __entity wrapper natively (proven by spike 2026-05-20),
- *               so no conversion is required.
- *               → Pass through unchanged. Noted in response for user awareness.
+ * Cedar WASM format:
+ *   uid: { type, id }, attrs: { key: rawValue }, parents: [{ type, id }]
+ *   Entity refs in attrs: { __entity: { type, id } }
+ *   Extension types: { __extn: { fn, arg } }
  *
- * "avp"       — AWS Verified Permissions SDK payload format.
- *               - Entity UID key: `identifier: { entity_type, entity_id }` (not `uid`)
- *               - Entity attrs key: `attributes` (not `attrs`)
- *               - Attribute values: typed wrappers `{ string: "v" }`, `{ long: 42 }`, `{ boolean: true }`
- *               - Parent refs: `{ entity_type, entity_id }` (not `{ type, id }`)
- *               - Principal/action/resource: structured objects `{ entity_type, entity_id }`
- *               WASM REJECTS avp format entirely (hard parse errors, proven by spike).
- *               → Must be converted to cedar format before passing to WASM.
+ * Detection strategy: case-insensitive key lookup handles all three casing variants
+ * in a single code path. One normalizer to rule them all.
  *
- * Limitation: AVP attribute wrapping detection uses the heuristic:
- *   "a single-key object whose key is `string`, `long`, or `boolean` with a matching primitive value"
- *   A Cedar Record attribute with exactly one field named `string`/`long`/`boolean` would be
- *   misidentified. Adding a second field to such a Record removes the ambiguity.
+ * Cedar CLI format (uid.__entity wrapper): WASM accepts natively — no conversion needed.
+ *
+ * Attribute value wrapper detection rule:
+ *   Single-key object whose key (lowercased) is a known AVP type name AND whose value
+ *   is the matching primitive. Multi-key objects are Cedar Records — not touched.
+ *
+ * Limitation: a Cedar Record with exactly one field named "string"/"long"/"boolean"
+ *   would be misidentified. Adding a second field removes the ambiguity.
+ *
+ * Sources confirmed by SDK docs (2026-05-20):
+ *   Ruby: entity_type/entity_id/entity_identifier (snake_case)
+ *   Python/JS: entityType/entityId/entityIdentifier (camelCase)
+ *   Official API: EntityType/EntityId/EntityIdentifier (PascalCase)
  */
 
 export type InputFormat = "cedar" | "avp" | "cedar_cli";
@@ -44,7 +47,21 @@ export interface NormalizedRefError {
   error: string;
 }
 
-// ─── Detection ───────────────────────────────────────────────────────────────
+// ─── Case-insensitive key access ──────────────────────────────────────────────
+
+/** Find the value of a key case-insensitively. First match wins. */
+function getCI(obj: Record<string, unknown>, key: string): unknown {
+  const lower = key.toLowerCase();
+  const found = Object.keys(obj).find((k) => k.toLowerCase() === lower);
+  return found !== undefined ? obj[found] : undefined;
+}
+
+function hasKeyCI(obj: Record<string, unknown>, key: string): boolean {
+  const lower = key.toLowerCase();
+  return Object.keys(obj).some((k) => k.toLowerCase() === lower);
+}
+
+// ─── Detection ────────────────────────────────────────────────────────────────
 
 export function detectFormat(
   entities: unknown[],
@@ -52,39 +69,39 @@ export function detectFormat(
   action: unknown,
   resource: unknown
 ): FormatDetectionResult {
-  // AVP principal/action/resource objects are a definitive signal
+  // AVP principal/action/resource — any casing of entity_type/entityType/EntityType
   if (isAvpRef(principal) || isAvpActionRef(action) || isAvpRef(resource)) {
     return {
       format: "avp",
       confidence: "high",
-      note: "Principal, action, or resource is in AVP format ({ entity_type, entity_id }). Automatically converted to Cedar format.",
+      note: "Principal, action, or resource is in AVP format (entity_type/entityType/EntityType keys). Automatically converted to Cedar format.",
     };
   }
 
-  // AVP entity structure: `identifier` key is the clearest signal
+  // AVP entity list: `identifier` key (case-insensitive) is the clearest signal
   if (entities.some(hasAvpIdentifierKey)) {
     return {
       format: "avp",
       confidence: "high",
-      note: "Entities are in AVP format (identifier key, entity_type/entity_id, typed attribute values). Automatically converted to Cedar format.",
+      note: "Entities are in AVP format (identifier/Identifier key, typed attribute wrappers). Automatically converted to Cedar format.",
     };
   }
 
-  // AVP attribute wrapping without identifier key (partial AVP — unusual but possible)
-  if (entities.some(hasAvpTypedAttributes)) {
+  // AVP-typed attribute values without identifier key (partial AVP)
+  if (entities.some(hasAvpTypedAttributeValues)) {
     return {
       format: "avp",
       confidence: "medium",
-      note: "Entity attributes appear to use AVP typed wrappers ({ string, long, boolean }). Automatically unwrapped to raw Cedar values.",
+      note: "Entity attributes appear to use AVP typed wrappers (string/long/boolean/set/record). Automatically unwrapped to raw Cedar values.",
     };
   }
 
-  // Cedar CLI uid.__entity wrapper — WASM handles this natively, no conversion needed
+  // Cedar CLI uid.__entity wrapper — WASM accepts natively, no conversion needed
   if (entities.some(hasCedarCliEntityWrapper)) {
     return {
       format: "cedar_cli",
       confidence: "high",
-      note: "Entity UIDs use the __entity wrapper (Cedar CLI format). This is compatible with Cedar WASM — no conversion needed.",
+      note: "Entity UIDs use the __entity wrapper (Cedar CLI format). Compatible with Cedar WASM — no conversion needed.",
     };
   }
 
@@ -106,7 +123,7 @@ export function normalizePrincipalRef(ref: unknown): NormalizedRef | NormalizedR
   // Cedar string literal: 'Ns::Type::"id"'
   if (typeof ref === "string") {
     const match = ref.match(/^(.+)::"(.+)"$/);
-    if (!match) return { error: `Invalid Cedar entity reference: "${ref}". Expected format: Namespace::Type::"id"` };
+    if (!match) return { error: `Invalid Cedar entity reference: "${ref}". Expected: Namespace::Type::"id"` };
     return { type: match[1]!, id: match[2]! };
   }
 
@@ -121,7 +138,7 @@ export function normalizePrincipalRef(ref: unknown): NormalizedRef | NormalizedR
     return { type: obj["type"], id: obj["id"] };
   }
 
-  // WASM native (Cedar CLI wrapper): { __entity: { type, id } }
+  // WASM Cedar CLI: { __entity: { type, id } }
   if (obj["__entity"] && typeof obj["__entity"] === "object") {
     const inner = obj["__entity"] as Record<string, unknown>;
     if (typeof inner["type"] === "string" && typeof inner["id"] === "string") {
@@ -129,14 +146,18 @@ export function normalizePrincipalRef(ref: unknown): NormalizedRef | NormalizedR
     }
   }
 
-  // AVP entity ref: { entity_type, entity_id }
-  if (typeof obj["entity_type"] === "string" && typeof obj["entity_id"] === "string") {
-    return { type: obj["entity_type"], id: obj["entity_id"] };
+  // AVP entity ref — all three casings (entity_type / entityType / EntityType)
+  const entityType = getCI(obj, "entity_type") ?? getCI(obj, "entityType") ?? getCI(obj, "EntityType");
+  const entityId = getCI(obj, "entity_id") ?? getCI(obj, "entityId") ?? getCI(obj, "EntityId");
+  if (typeof entityType === "string" && typeof entityId === "string") {
+    return { type: entityType, id: entityId };
   }
 
-  // AVP action ref: { action_type, action_id }
-  if (typeof obj["action_type"] === "string" && typeof obj["action_id"] === "string") {
-    return { type: obj["action_type"], id: obj["action_id"] };
+  // AVP action ref — all three casings (action_type / actionType / ActionType)
+  const actionType = getCI(obj, "action_type") ?? getCI(obj, "actionType") ?? getCI(obj, "ActionType");
+  const actionId = getCI(obj, "action_id") ?? getCI(obj, "actionId") ?? getCI(obj, "ActionId");
+  if (typeof actionType === "string" && typeof actionId === "string") {
+    return { type: actionType, id: actionId };
   }
 
   return { error: `Unrecognized entity reference format: ${JSON.stringify(ref)}` };
@@ -152,92 +173,183 @@ export function unwrapAvpAttributes(
   return result;
 }
 
-// ─── Private helpers ──────────────────────────────────────────────────────────
+// ─── Private: detection helpers ───────────────────────────────────────────────
 
 function isAvpRef(ref: unknown): boolean {
   if (typeof ref !== "object" || ref === null) return false;
   const obj = ref as Record<string, unknown>;
-  return typeof obj["entity_type"] === "string" && typeof obj["entity_id"] === "string";
+  const hasType =
+    typeof getCI(obj, "entity_type") === "string" ||
+    typeof getCI(obj, "entityType") === "string" ||
+    typeof getCI(obj, "EntityType") === "string";
+  const hasId =
+    typeof getCI(obj, "entity_id") === "string" ||
+    typeof getCI(obj, "entityId") === "string" ||
+    typeof getCI(obj, "EntityId") === "string";
+  return hasType && hasId;
 }
 
 function isAvpActionRef(ref: unknown): boolean {
   if (typeof ref !== "object" || ref === null) return false;
   const obj = ref as Record<string, unknown>;
-  return typeof obj["action_type"] === "string" && typeof obj["action_id"] === "string";
+  const hasType =
+    typeof getCI(obj, "action_type") === "string" ||
+    typeof getCI(obj, "actionType") === "string" ||
+    typeof getCI(obj, "ActionType") === "string";
+  const hasId =
+    typeof getCI(obj, "action_id") === "string" ||
+    typeof getCI(obj, "actionId") === "string" ||
+    typeof getCI(obj, "ActionId") === "string";
+  return hasType && hasId;
 }
 
 function hasAvpIdentifierKey(entity: unknown): boolean {
   if (typeof entity !== "object" || entity === null) return false;
-  return "identifier" in (entity as Record<string, unknown>);
+  return hasKeyCI(entity as Record<string, unknown>, "identifier");
 }
 
-function hasAvpTypedAttributes(entity: unknown): boolean {
+function hasAvpTypedAttributeValues(entity: unknown): boolean {
   if (typeof entity !== "object" || entity === null) return false;
   const e = entity as Record<string, unknown>;
-  // Check both "attributes" key (AVP) and "attrs" key (WASM with typed values)
-  const attrs = (e["attributes"] ?? e["attrs"]) as Record<string, unknown> | undefined;
-  if (!attrs || typeof attrs !== "object") return false;
-  return Object.values(attrs).some(isAvpTypedValue);
+  const rawAttrs =
+    getCI(e, "attributes") ??
+    getCI(e, "Attributes") ??
+    e["attrs"];
+  if (!rawAttrs || typeof rawAttrs !== "object") return false;
+  return Object.values(rawAttrs as Record<string, unknown>).some(isAvpTypedValue);
 }
 
 function hasCedarCliEntityWrapper(entity: unknown): boolean {
   if (typeof entity !== "object" || entity === null) return false;
   const e = entity as Record<string, unknown>;
-  if (typeof e["uid"] !== "object" || e["uid"] === null) return false;
-  return "__entity" in (e["uid"] as Record<string, unknown>);
+  const uid = e["uid"];
+  if (typeof uid !== "object" || uid === null) return false;
+  return "__entity" in (uid as Record<string, unknown>);
 }
 
 /**
- * Detects AVP typed value wrappers.
- * Rule: a single-key object where the key is "string", "long", or "boolean"
- * AND the value is the matching primitive type.
- * Multi-key objects are Cedar Records, not AVP wrappers.
+ * Detects AVP typed value wrappers (case-insensitive type key).
+ * Rule: single-key object whose key lowercased is a known AVP type name with matching value type.
+ * Multi-key objects are Cedar Records.
  */
 function isAvpTypedValue(v: unknown): boolean {
   if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
   const keys = Object.keys(v as object);
   if (keys.length !== 1) return false;
-  const key = keys[0]!;
-  const val = (v as Record<string, unknown>)[key];
+  const key = keys[0]!.toLowerCase();
+  const val = (v as Record<string, unknown>)[keys[0]!];
   return (
     (key === "string" && typeof val === "string") ||
     (key === "long" && typeof val === "number") ||
-    (key === "boolean" && typeof val === "boolean")
+    (key === "boolean" && typeof val === "boolean") ||
+    key === "entityidentifier" ||
+    key === "entity_identifier" ||
+    key === "set" ||
+    key === "record" ||
+    key === "ipaddr" ||
+    key === "ipaddress" ||
+    key === "decimal" ||
+    key === "datetime" ||
+    key === "duration"
   );
 }
 
+// ─── Private: value unwrapping ────────────────────────────────────────────────
+
 function unwrapAvpValue(v: unknown): unknown {
-  if (!isAvpTypedValue(v)) return v;
-  const obj = v as Record<string, unknown>;
-  return obj["string"] ?? obj["long"] ?? obj["boolean"];
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return v;
+
+  const keys = Object.keys(v as object);
+  if (keys.length !== 1) return v; // Multi-key object = Cedar Record, not AVP wrapper
+
+  const key = keys[0]!;
+  const lowerKey = key.toLowerCase();
+  const val = (v as Record<string, unknown>)[key];
+
+  switch (lowerKey) {
+    case "string":
+      return typeof val === "string" ? val : v;
+    case "long":
+      return typeof val === "number" ? val : v;
+    case "boolean":
+      return typeof val === "boolean" ? val : v;
+
+    // Entity reference → WASM __entity
+    case "entityidentifier":
+    case "entity_identifier": {
+      const ref = resolveAvpEntityRef(val);
+      return ref ? { __entity: ref } : v;
+    }
+
+    // Set → array (recursively normalize values)
+    case "set":
+      return Array.isArray(val) ? val.map(unwrapAvpValue) : v;
+
+    // Record → object (recursively normalize values)
+    case "record":
+      if (typeof val === "object" && val !== null && !Array.isArray(val)) {
+        return unwrapAvpAttributes(val as Record<string, unknown>);
+      }
+      return v;
+
+    // Cedar extension types → WASM __extn format
+    case "ipaddr":
+    case "ipaddress":
+      return typeof val === "string" ? { __extn: { fn: "ip", arg: val } } : v;
+    case "decimal":
+      return typeof val === "string" ? { __extn: { fn: "decimal", arg: val } } : v;
+    case "datetime":
+      return typeof val === "string" ? { __extn: { fn: "datetime", arg: val } } : v;
+    case "duration":
+      return typeof val === "string" ? { __extn: { fn: "duration", arg: val } } : v;
+
+    default:
+      return v;
+  }
 }
+
+/** Resolves an AVP entity reference object (any casing) to { type, id }. */
+function resolveAvpEntityRef(ref: unknown): { type: string; id: string } | null {
+  if (typeof ref !== "object" || ref === null) return null;
+  const obj = ref as Record<string, unknown>;
+  const type =
+    (getCI(obj, "entity_type") ?? getCI(obj, "entityType") ?? getCI(obj, "EntityType")) as string | undefined;
+  const id =
+    (getCI(obj, "entity_id") ?? getCI(obj, "entityId") ?? getCI(obj, "EntityId")) as string | undefined;
+  if (type && id) return { type, id };
+  return null;
+}
+
+// ─── Private: entity normalization ───────────────────────────────────────────
 
 function normalizeAvpEntity(entity: unknown): unknown {
   if (typeof entity !== "object" || entity === null) return entity;
   const e = entity as Record<string, unknown>;
 
-  // UID: convert identifier → uid with { type, id }
+  // UID: find identifier/Identifier key (any casing), convert to { type, id }
+  const identifierKey = Object.keys(e).find((k) => k.toLowerCase() === "identifier");
   let uid: unknown;
-  if (e["identifier"] && typeof e["identifier"] === "object") {
-    const id = e["identifier"] as Record<string, unknown>;
-    uid = { type: id["entity_type"], id: id["entity_id"] };
+  if (identifierKey) {
+    const idObj = e[identifierKey] as Record<string, unknown>;
+    const type = getCI(idObj, "entity_type") ?? getCI(idObj, "entityType") ?? getCI(idObj, "EntityType");
+    const id = getCI(idObj, "entity_id") ?? getCI(idObj, "entityId") ?? getCI(idObj, "EntityId");
+    uid = { type, id };
   } else {
     uid = e["uid"];
   }
 
-  // Attrs: convert attributes → attrs, unwrap typed values
-  const rawAttrs = (e["attributes"] ?? e["attrs"] ?? {}) as Record<string, unknown>;
-  const attrs = unwrapAvpAttributes(rawAttrs);
+  // Attrs: find attributes/Attributes key (any casing), fall back to attrs
+  const attrsKey = Object.keys(e).find((k) => k.toLowerCase() === "attributes");
+  const rawAttrs = (attrsKey ? e[attrsKey] : e["attrs"]) ?? {};
+  const attrs = unwrapAvpAttributes(rawAttrs as Record<string, unknown>);
 
-  // Parents: convert entity_type/entity_id → type/id
-  const rawParents = (e["parents"] ?? []) as unknown[];
+  // Parents: find parents/Parents key (any casing), convert entity_type/entityType/EntityType → type/id
+  const parentsKey = Object.keys(e).find((k) => k.toLowerCase() === "parents");
+  const rawParents = ((parentsKey ? e[parentsKey] : e["parents"]) ?? []) as unknown[];
   const parents = rawParents.map((p) => {
     if (typeof p !== "object" || p === null) return p;
-    const parent = p as Record<string, unknown>;
-    if (typeof parent["entity_type"] === "string" && typeof parent["entity_id"] === "string") {
-      return { type: parent["entity_type"], id: parent["entity_id"] };
-    }
-    return p;
+    const ref = resolveAvpEntityRef(p);
+    return ref ?? p;
   });
 
   return { uid, attrs, parents };
