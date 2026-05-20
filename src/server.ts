@@ -3,6 +3,7 @@ import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { handleAuthorize } from "./tools/authorize.js";
 import { handleValidate } from "./tools/validate.js";
+import { handleValidateSchema } from "./tools/validate-schema.js";
 import { handleFormat } from "./tools/format.js";
 import { handleTranslate } from "./tools/translate.js";
 import { handleExplainMany } from "./tools/explain.js";
@@ -94,6 +95,27 @@ export function createServer(): McpServer {
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
+    }
+  );
+
+  server.tool(
+    "cedar_validate_schema",
+    "Validate a Cedar schema in isolation (no policies required). Accepts JSON object or .cedarschema text. Returns parse errors with source locations plus a summary of namespaces, entity types, actions, and common types.",
+    {
+      schema: z.string().optional().describe("Cedar schema text — JSON object or .cedarschema text. Omit if using schema_ref."),
+      schema_ref: z.string().optional().describe("cedar:// URI to load schema, e.g. cedar://schema/blue"),
+    },
+    async (input) => {
+      let schema = input.schema;
+      if (!schema && input.schema_ref) {
+        const resolved = resolveRef(input.schema_ref);
+        if ("error" in resolved) return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }] };
+        schema = resolved.content;
+      }
+      if (!schema) return { content: [{ type: "text", text: JSON.stringify({ error: "Either schema or schema_ref is required" }) }] };
+
+      const result = await handleValidateSchema({ schema });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
   );
 
