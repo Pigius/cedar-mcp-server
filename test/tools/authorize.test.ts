@@ -69,6 +69,33 @@ describe("cedar_authorize", () => {
     expect(result.determining_policies.length).toBeGreaterThan(0);
   });
 
+  it("returns structured error for malformed entity reference instead of throwing", async () => {
+    const result = await handleAuthorize({
+      policies: `permit(principal, action, resource);`,
+      principal: "bad-format-no-quotes",
+      action: 'DocMgmt::Action::"READ"',
+      resource: 'DocMgmt::Document::"doc-public"',
+      entities: JSON.stringify(ENTITIES),
+    });
+
+    expect(result.error).toBeDefined();
+    expect(result.decision).toBe("Deny");
+  });
+
+  it("returns structured error for invalid entities JSON instead of throwing", async () => {
+    const result = await handleAuthorize({
+      policies: `permit(principal, action, resource);`,
+      principal: 'DocMgmt::User::"alice"',
+      action: 'DocMgmt::Action::"READ"',
+      resource: 'DocMgmt::Document::"doc-public"',
+      entities: "not valid json",
+    });
+
+    expect(result.error).toBeDefined();
+    expect(result.error).toContain("entities");
+    expect(result.decision).toBe("Deny");
+  });
+
   it("accepts schema and validates the request", async () => {
     const result = await handleAuthorize({
       policies: POLICIES,

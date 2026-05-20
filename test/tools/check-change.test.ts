@@ -82,6 +82,18 @@ describe("cedar_check_policy_change", () => {
     expect(result.changes.find((c) => c.field === "conditions")?.in_place_allowed).toBe(true);
   });
 
+  it("returns structured error for invalid Cedar input instead of throwing", async () => {
+    const result = await handleCheckChange({
+      old_policy: "this is not cedar",
+      new_policy: `permit(principal, action, resource);`,
+    });
+
+    expect(result.error).toBeDefined();
+    expect(result.error).toContain("Failed to parse old_policy");
+    expect(result.can_update_in_place).toBe(false);
+    expect(result.changes).toHaveLength(0);
+  });
+
   it("4.7 — identical policies: no changes, can update in place", async () => {
     const policy = `permit(principal in MyApp::Role::"viewer", action == MyApp::Action::"READ", resource);`;
     const result = await handleCheckChange({ old_policy: policy, new_policy: policy });

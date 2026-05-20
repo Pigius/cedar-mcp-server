@@ -15,6 +15,7 @@ export interface AuthorizeResult {
   decision: "Allow" | "Deny";
   determining_policies: string[];
   errors: string[];
+  error?: string;
 }
 
 function parseEntityRef(ref: string): { type: string; id: string } {
@@ -26,16 +27,30 @@ function parseEntityRef(ref: string): { type: string; id: string } {
   return { type: match[1], id: match[2] };
 }
 
+const DENY_RESULT = (error: string): AuthorizeResult => ({
+  decision: "Deny",
+  determining_policies: [],
+  errors: [],
+  error,
+});
+
 export async function handleAuthorize(input: AuthorizeInput): Promise<AuthorizeResult> {
-  const principal = parseEntityRef(input.principal);
-  const action = parseEntityRef(input.action);
-  const resource = parseEntityRef(input.resource);
+  let principal: { type: string; id: string };
+  let action: { type: string; id: string };
+  let resource: { type: string; id: string };
+  try {
+    principal = parseEntityRef(input.principal);
+    action = parseEntityRef(input.action);
+    resource = parseEntityRef(input.resource);
+  } catch (e) {
+    return DENY_RESULT(e instanceof Error ? e.message : String(e));
+  }
 
   let entities: Entities;
   try {
     entities = JSON.parse(input.entities);
   } catch {
-    throw new Error("entities must be a valid JSON array");
+    return DENY_RESULT("entities must be a valid JSON array");
   }
 
   let schema: Schema | undefined;
@@ -53,7 +68,7 @@ export async function handleAuthorize(input: AuthorizeInput): Promise<AuthorizeR
     try {
       context = JSON.parse(input.context);
     } catch {
-      throw new Error("context must be a valid JSON object");
+      return DENY_RESULT("context must be a valid JSON object");
     }
   }
 

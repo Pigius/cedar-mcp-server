@@ -18,6 +18,7 @@ export interface CheckChangeResult {
   can_update_in_place: boolean;
   changes: PolicyChange[];
   recommendation: string;
+  error?: string;
 }
 
 const IN_PLACE_RULES: Record<string, { allowed: boolean; reason: string }> = {
@@ -55,9 +56,25 @@ function stringify(v: unknown): string {
   return JSON.stringify(v);
 }
 
+const EMPTY_RESULT: Omit<CheckChangeResult, "error"> = {
+  can_update_in_place: false,
+  changes: [],
+  recommendation: "",
+};
+
 export async function handleCheckChange(input: CheckChangeInput): Promise<CheckChangeResult> {
-  const oldJson = parsePolicy(input.old_policy);
-  const newJson = parsePolicy(input.new_policy);
+  let oldJson: PolicyJson;
+  let newJson: PolicyJson;
+  try {
+    oldJson = parsePolicy(input.old_policy);
+  } catch (e) {
+    return { ...EMPTY_RESULT, error: `Failed to parse old_policy: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  try {
+    newJson = parsePolicy(input.new_policy);
+  } catch (e) {
+    return { ...EMPTY_RESULT, error: `Failed to parse new_policy: ${e instanceof Error ? e.message : String(e)}` };
+  }
 
   const changes: PolicyChange[] = [];
 
