@@ -35,13 +35,30 @@ const DENY_RESULT = (error: string, detection?: FormatDetectionResult): Authoriz
 });
 
 export async function handleAuthorize(input: AuthorizeInput): Promise<AuthorizeResult> {
-  // Parse entities first so we can run format detection
+  // Parse entities first so we can run format detection.
+  // Also unwrap the AVP SDK entity_list/entityList envelope:
+  //   Ruby SDK:    { entity_list: [...] }
+  //   Python/JS:   { entityList: [...] }
+  //   Official API: { entityList: [...] }
+  // Users sometimes copy the full SDK entities parameter value rather than just the array.
   let rawEntities: unknown[];
   try {
-    rawEntities = JSON.parse(input.entities as string);
-    if (!Array.isArray(rawEntities)) throw new Error("not an array");
+    const parsed = JSON.parse(input.entities as string);
+    if (Array.isArray(parsed)) {
+      rawEntities = parsed;
+    } else if (typeof parsed === "object" && parsed !== null) {
+      const obj = parsed as Record<string, unknown>;
+      const list = obj["entity_list"] ?? obj["entityList"] ?? obj["EntityList"];
+      if (Array.isArray(list)) {
+        rawEntities = list;
+      } else {
+        throw new Error("not an array");
+      }
+    } else {
+      throw new Error("not an array");
+    }
   } catch {
-    return DENY_RESULT("entities must be a valid JSON array");
+    return DENY_RESULT("entities must be a valid JSON array or an AVP entity_list object");
   }
 
   // Detect format across all inputs together

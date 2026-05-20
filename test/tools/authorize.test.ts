@@ -69,6 +69,32 @@ describe("cedar_authorize", () => {
     expect(result.determining_policies.length).toBeGreaterThan(0);
   });
 
+  it("unwraps AVP entity_list envelope (Ruby SDK full entities parameter)", async () => {
+    // Ruby SDK sends: entities: { entity_list: [...] }
+    // Users who copy the full SDK entities value get this structure
+    const result = await handleAuthorize({
+      policies: POLICIES,
+      principal: 'DocMgmt::User::"alice"',
+      action: 'DocMgmt::Action::"READ"',
+      resource: 'DocMgmt::Document::"doc-public"',
+      entities: JSON.stringify({ entity_list: ENTITIES }),
+    });
+    expect(result.decision).toBe("Allow");
+    expect(result.error).toBeUndefined();
+  });
+
+  it("unwraps AVP entityList envelope (Python/JS SDK full entities parameter)", async () => {
+    const result = await handleAuthorize({
+      policies: POLICIES,
+      principal: 'DocMgmt::User::"alice"',
+      action: 'DocMgmt::Action::"READ"',
+      resource: 'DocMgmt::Document::"doc-public"',
+      entities: JSON.stringify({ entityList: ENTITIES }),
+    });
+    expect(result.decision).toBe("Allow");
+    expect(result.error).toBeUndefined();
+  });
+
   it("returns structured error for malformed entity reference instead of throwing", async () => {
     const result = await handleAuthorize({
       policies: `permit(principal, action, resource);`,
