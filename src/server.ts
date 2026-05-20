@@ -20,6 +20,7 @@ import { handleListTemplates } from "./tools/list-templates.js";
 import { handleListTemplateLinks } from "./tools/list-template-links.js";
 import { storeManager } from "./resources/store-manager.js";
 import { resolveRef } from "./resources/ref-resolver.js";
+import { PROMPT_DEFINITIONS } from "./prompts/index.js";
 
 export const SERVER_NAME = "cedar-mcp-server";
 export const SERVER_VERSION = "0.0.1";
@@ -501,6 +502,12 @@ export function createServer(): McpServer {
       }
     }
   );
+
+  // ─── MCP Prompts: pre-canned templates the client surfaces as slash commands ──
+
+  for (const p of PROMPT_DEFINITIONS) {
+    server.prompt(p.name, p.description, p.argsSchema, p.handler);
+  }
 
   return server;
 }
