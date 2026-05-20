@@ -1,0 +1,43 @@
+[
+  {
+    "uid": { "type": "DocMgmt::User", "id": "alice" },
+    "attrs": { "name": "Alice", "email": "alice@example.com" },
+    "parents": [{ "type": "DocMgmt::Role", "id": "admin" }]
+  },
+  {
+    "uid": { "type": "DocMgmt::User", "id": "bob" },
+    "attrs": { "name": "Bob", "email": "bob@example.com" },
+    "parents": [{ "type": "DocMgmt::Role", "id": "editor" }]
+  },
+  {
+    "uid": { "type": "DocMgmt::User", "id": "charlie" },
+    "attrs": { "name": "Charlie", "email": "charlie@example.com" },
+    "parents": [{ "type": "DocMgmt::Role", "id": "viewer" }]
+  },
+  {
+    "uid": { "type": "DocMgmt::User", "id": "dave" },
+    "attrs": { "name": "Dave", "email": "dave@example.com" },
+    "parents": []
+  },
+  { "uid": { "type": "DocMgmt::Role", "id": "admin" }, "attrs": {}, "parents": [] },
+  { "uid": { "type": "DocMgmt::Role", "id": "editor" }, "attrs": {}, "parents": [] },
+  { "uid": { "type": "DocMgmt::Role", "id": "viewer" }, "attrs": {}, "parents": [] },
+  {
+    "uid": { "type": "DocMgmt::Document", "id": "roadmap-2026" },
+    "attrs": { "owner": "alice", "classification": "internal" },
+    "parents": [{ "type": "DocMgmt::Folder", "id": "strategy" }]
+  },
+  {
+    "uid": { "type": "DocMgmt::Document", "id": "public-announcement" },
+    "attrs": { "owner": "alice", "classification": "public" },
+    "parents": [{ "type": "DocMgmt::Folder", "id": "comms" }]
+  },
+  {
+    "uid": { "type": "DocMgmt::Document", "id": "acquisition-details" },
+    "attrs": { "owner": "alice", "classification": "top_secret" },
+    "parents": [{ "type": "DocMgmt::Folder", "id": "confidential" }]
+  },
+  { "uid": { "type": "DocMgmt::Folder", "id": "strategy" }, "attrs": {}, "parents": [] },
+  { "uid": { "type": "DocMgmt::Folder", "id": "comms" }, "attrs": {}, "parents": [] },
+  { "uid": { "type": "DocMgmt::Folder", "id": "confidential" }, "attrs": {}, "parents": [] }
+]

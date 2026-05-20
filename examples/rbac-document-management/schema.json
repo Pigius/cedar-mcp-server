@@ -1,0 +1,57 @@
+{
+  "DocMgmt": {
+    "entityTypes": {
+      "User": {
+        "memberOfTypes": ["Role"],
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "name": { "type": "String", "required": true },
+            "email": { "type": "String", "required": true }
+          }
+        }
+      },
+      "Role": {
+        "memberOfTypes": [],
+        "shape": { "type": "Record", "attributes": {} }
+      },
+      "Document": {
+        "memberOfTypes": ["Folder"],
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "owner": { "type": "String", "required": true },
+            "classification": { "type": "String", "required": true }
+          }
+        }
+      },
+      "Folder": {
+        "memberOfTypes": [],
+        "shape": { "type": "Record", "attributes": {} }
+      }
+    },
+    "actions": {
+      "READ": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["Document"],
+          "context": { "type": "Record", "attributes": {} }
+        }
+      },
+      "WRITE": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["Document"],
+          "context": { "type": "Record", "attributes": {} }
+        }
+      },
+      "DELETE": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["Document"],
+          "context": { "type": "Record", "attributes": {} }
+        }
+      }
+    }
+  }
+}

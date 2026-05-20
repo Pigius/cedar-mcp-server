@@ -1,0 +1,33 @@
+[
+  {
+    "uid": { "type": "SaaS::User", "id": "alice" },
+    "attrs": { "name": "alice", "plan": "enterprise" },
+    "parents": []
+  },
+  {
+    "uid": { "type": "SaaS::User", "id": "bob" },
+    "attrs": { "name": "bob", "plan": "pro" },
+    "parents": []
+  },
+  {
+    "uid": { "type": "SaaS::User", "id": "charlie" },
+    "attrs": { "name": "charlie", "plan": "free" },
+    "parents": []
+  },
+  { "uid": { "type": "SaaS::Workspace", "id": "acme-corp" }, "attrs": {}, "parents": [] },
+  {
+    "uid": { "type": "SaaS::Document", "id": "q4-roadmap" },
+    "attrs": { "visibility": "internal", "owner_id": "alice" },
+    "parents": [{ "type": "SaaS::Workspace", "id": "acme-corp" }]
+  },
+  {
+    "uid": { "type": "SaaS::Document", "id": "public-changelog" },
+    "attrs": { "visibility": "public", "owner_id": "alice" },
+    "parents": [{ "type": "SaaS::Workspace", "id": "acme-corp" }]
+  },
+  {
+    "uid": { "type": "SaaS::Document", "id": "salary-review" },
+    "attrs": { "visibility": "private", "owner_id": "alice" },
+    "parents": [{ "type": "SaaS::Workspace", "id": "acme-corp" }]
+  }
+]

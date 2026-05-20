@@ -1,0 +1,20 @@
+[
+  {
+    "uid": { "type": "API::User", "id": "alice" },
+    "attrs": {},
+    "parents": [{ "type": "API::Role", "id": "admin" }]
+  },
+  {
+    "uid": { "type": "API::User", "id": "bob" },
+    "attrs": {},
+    "parents": [{ "type": "API::Role", "id": "developer" }]
+  },
+  {
+    "uid": { "type": "API::User", "id": "charlie" },
+    "attrs": {},
+    "parents": [{ "type": "API::Role", "id": "viewer" }]
+  },
+  { "uid": { "type": "API::Role", "id": "admin" }, "attrs": {}, "parents": [] },
+  { "uid": { "type": "API::Role", "id": "developer" }, "attrs": {}, "parents": [] },
+  { "uid": { "type": "API::Role", "id": "viewer" }, "attrs": {}, "parents": [] }
+]

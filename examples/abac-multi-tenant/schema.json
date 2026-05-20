@@ -1,0 +1,60 @@
+{
+  "SaaS": {
+    "entityTypes": {
+      "User": {
+        "memberOfTypes": [],
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "name": { "type": "String", "required": true },
+            "plan": { "type": "String", "required": true }
+          }
+        }
+      },
+      "Workspace": {
+        "memberOfTypes": [],
+        "shape": { "type": "Record", "attributes": {} }
+      },
+      "Document": {
+        "memberOfTypes": ["Workspace"],
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "visibility": { "type": "String", "required": true },
+            "owner_id": { "type": "String", "required": true }
+          }
+        }
+      }
+    },
+    "actions": {
+      "READ": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["Document"],
+          "context": { "type": "Record", "attributes": {} }
+        }
+      },
+      "WRITE": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["Document"],
+          "context": { "type": "Record", "attributes": {} }
+        }
+      },
+      "SHARE": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["Document"],
+          "context": { "type": "Record", "attributes": {} }
+        }
+      },
+      "DELETE": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["Document"],
+          "context": { "type": "Record", "attributes": {} }
+        }
+      }
+    }
+  }
+}

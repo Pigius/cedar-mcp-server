@@ -1,0 +1,54 @@
+{
+  "API": {
+    "entityTypes": {
+      "User": {
+        "memberOfTypes": ["Role"],
+        "shape": { "type": "Record", "attributes": {} }
+      },
+      "Role": {
+        "memberOfTypes": [],
+        "shape": { "type": "Record", "attributes": {} }
+      },
+      "Endpoint": {
+        "memberOfTypes": [],
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "path": { "type": "String", "required": true },
+            "method": { "type": "String", "required": true }
+          }
+        }
+      }
+    },
+    "actions": {
+      "GET": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["Endpoint"],
+          "context": { "type": "Record", "attributes": {} }
+        }
+      },
+      "POST": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["Endpoint"],
+          "context": { "type": "Record", "attributes": {} }
+        }
+      },
+      "PUT": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["Endpoint"],
+          "context": { "type": "Record", "attributes": {} }
+        }
+      },
+      "DELETE": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["Endpoint"],
+          "context": { "type": "Record", "attributes": {} }
+        }
+      }
+    }
+  }
+}

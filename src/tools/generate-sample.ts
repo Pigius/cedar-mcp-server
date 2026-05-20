@@ -305,16 +305,21 @@ function buildEntities(
     }
   }
 
-  // Apply like-based attribute generation for attributes not already set by eq/has constraints.
-  // Strategy (proven by spike 2026-05-20):
-  //   allow → use positive pattern with single no-slash wildcard ("x") — avoids depth-limiting negations
-  //   deny  → use negative pattern (inside "!") with single no-slash wildcard ("x") —
-  //           generates a path that satisfies the negated like, making !like false → deny
-  //   deny with no negative pattern → fall back to a non-matching prefix string
+  // Apply like-based attribute generation.
+  // For deny: negative like (depth-limit) takes priority over eq-violation for the same attribute —
+  // it produces a more educational value (e.g. "/api/v1/projects/x/x" beats "__deny_path").
+  const attrsWithNegativeLike = new Set(
+    likeConstraints
+      .filter((lc) => lc.negated && targetDecision === "deny")
+      .map((lc) => `${lc.variable}.${lc.attr}`)
+  );
+
   for (const lc of likeConstraints) {
     const target = lc.variable === "resource" ? resourceAttrs : principalAttrs;
-    // Skip if already set by an eq constraint (== takes priority — spike confirmed it covers allow)
-    if (target[lc.attr] !== undefined) continue;
+    const key = `${lc.variable}.${lc.attr}`;
+    // Allow: skip if already set by an eq constraint (== covers the allow case via ||)
+    // Deny: skip only if there's no negative like for this attr (eq-violation is the fallback)
+    if (target[lc.attr] !== undefined && !(targetDecision === "deny" && attrsWithNegativeLike.has(key))) continue;
 
     if (targetDecision === "allow" && !lc.negated) {
       target[lc.attr] = patternToString(lc.pattern, "x");
