@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { handleAuthorize } from "./tools/authorize.js";
+import { handleAuthorizeBatch } from "./tools/authorize-batch.js";
 import { handleValidate } from "./tools/validate.js";
 import { handleValidateSchema } from "./tools/validate-schema.js";
 import { handleDiffSchema } from "./tools/diff-schema.js";
@@ -64,6 +65,23 @@ export function createServer(): McpServer {
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
+    }
+  );
+
+  server.tool(
+    "cedar_authorize_batch",
+    "Run N authorization requests through ONE policy set and return the decision matrix. Use case: regression testing after a policy edit, or running a canonical request suite against a policy store. Accepts inline policies+schema OR cedar:// refs.",
+    {
+      policies: z.string().optional().describe("Cedar policy text (one or more policies). Omit if using policy_ref."),
+      policy_ref: z.string().optional().describe("cedar:// URI to load policies from a configured store, e.g. cedar://policies/blue"),
+      schema: z.string().optional().describe("Optional Cedar schema (JSON or .cedarschema). When supplied, schema-violating requests resolve to decision: Error rather than silent evaluation."),
+      schema_ref: z.string().optional().describe("cedar:// URI to load schema, e.g. cedar://schema/blue"),
+      requests: z.string().describe("JSON array of authorization request objects: {principal, action, resource, entities, context?}"),
+      entities: z.string().optional().describe("Shared entities JSON applied when individual requests omit their own entities field"),
+    },
+    async (input) => {
+      const result = await handleAuthorizeBatch(input);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
   );
 

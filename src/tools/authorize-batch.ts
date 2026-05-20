@@ -1,5 +1,5 @@
 import { isAuthorized } from "@cedar-policy/cedar-wasm/nodejs";
-import type { AuthorizationCall, Entities, Schema } from "@cedar-policy/cedar-wasm/nodejs";
+import type { AuthorizationCall, CedarValueJson, Entities, Schema } from "@cedar-policy/cedar-wasm/nodejs";
 import {
   detectFormat,
   normalizeEntities,
@@ -186,11 +186,11 @@ export async function handleAuthorizeBatch(
     }
 
     // 5d. Parse context
-    let context: Record<string, unknown> = {};
+    let context: Record<string, CedarValueJson> = {};
     if (req.context !== undefined) {
       if (typeof req.context === "string") {
         try {
-          context = JSON.parse(req.context);
+          context = JSON.parse(req.context) as Record<string, CedarValueJson>;
         } catch {
           decisions.push(
             errorDecision(i, principalStr, actionStr, resourceStr, "context is not valid JSON")
@@ -199,7 +199,7 @@ export async function handleAuthorizeBatch(
           continue;
         }
       } else if (typeof req.context === "object" && req.context !== null) {
-        context = req.context as Record<string, unknown>;
+        context = req.context as Record<string, CedarValueJson>;
       }
     }
 
