@@ -1,3 +1,4 @@
+import { policyToJson } from "@cedar-policy/cedar-wasm/nodejs";
 import { resolveStoreRef, buildStoreContext, formatContextForPrompt } from "./advise/context-builder.js";
 import { selectGotchas } from "./advise/gotchas.js";
 import { CEDAR_PATTERNS_SUMMARY } from "./advise/cedar-patterns.js";
@@ -117,7 +118,8 @@ export async function handleAdvise(
   const gotchaSection = buildGotchaSection(input.intent);
   const userPrompt = buildUserPrompt(input, storeContextSection, gotchaSection);
   const raw = await sampler(userPrompt, SYSTEM_PROMPT);
-  return parseAdviseResponse(raw);
+  const result = parseAdviseResponse(raw);
+  return validateSnippets(result);
 }
 
 function resolveStoreContext(storeRef: string | undefined, manager: StoreManager): string {
@@ -165,6 +167,48 @@ function buildUserPrompt(input: AdviseInput, storeContextSection: string, gotcha
   sections.push(`## Required Output Schema\n${outputSchema}`);
 
   return sections.join("\n\n");
+}
+
+function validateSnippets(result: AdviseResult): AdviseResult {
+  if (!result.required_changes || result.error) return result;
+
+  const snippetErrors: string[] = [];
+
+  for (const change of result.required_changes) {
+    const snippetsToCheck: Array<{ field: string; text: string }> = [];
+
+    if (change.type !== "schema") {
+      if (change.cedar_snippet) snippetsToCheck.push({ field: "cedar_snippet", text: change.cedar_snippet });
+    }
+    if (change.cedar_snippet_before) snippetsToCheck.push({ field: "cedar_snippet_before", text: change.cedar_snippet_before });
+    if (change.cedar_snippet_after) snippetsToCheck.push({ field: "cedar_snippet_after", text: change.cedar_snippet_after });
+
+    for (const { field, text } of snippetsToCheck) {
+      const parsed = policyToJson(text);
+      if (parsed.type === "failure") {
+        const msg = parsed.errors.map(e => e.message).join("; ");
+        snippetErrors.push(`Step ${change.step} ${field}: ${msg} (snippet: ${text.slice(0, 80)})`);
+      }
+    }
+  }
+
+  if (snippetErrors.length === 0) return result;
+
+  const gotchas = result.gotchas ?? [];
+  const alreadyPresent = gotchas.some(g => g.id === "invalid_cedar_snippet_in_plan");
+  if (alreadyPresent) return result;
+
+  return {
+    ...result,
+    gotchas: [
+      ...gotchas,
+      {
+        id: "invalid_cedar_snippet_in_plan",
+        severity: "high",
+        description: `One or more cedar_snippet fields in the plan failed to parse as valid Cedar. Verify and fix before applying. Errors: ${snippetErrors.join(" | ")}`,
+      },
+    ],
+  };
 }
 
 function parseAdviseResponse(raw: string): AdviseResult {

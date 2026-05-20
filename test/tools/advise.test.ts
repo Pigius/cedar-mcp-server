@@ -367,4 +367,52 @@ describe("cedar_advise", () => {
     // Should have a gotcha warning about ordering
     expect(result.gotchas!.some(g => g.id === "schema_first_then_policy")).toBe(true);
   });
+
+  // ─── Snippet validation (Phase 4 audit gap) ──────────────────────────────────
+
+  it("A17 — invalid cedar_snippet in policy_new step surfaces as high-severity gotcha", async () => {
+    const planWithBadSnippet = {
+      ...PLAN_FORBID_SENSITIVE,
+      required_changes: [
+        {
+          step: 1,
+          type: "policy_new",
+          description: "New policy with broken Cedar syntax",
+          cedar_snippet: "this is not valid cedar !!@#$",
+          avp_update_mode: "new_policy_via_create_policy",
+        },
+      ],
+      gotchas: [],
+    };
+
+    const result = await handleAdvise({ intent: "add policy" }, mockSampler(planWithBadSnippet));
+
+    expect(result.error).toBeUndefined();
+    const snippetGotcha = result.gotchas?.find(g => g.id === "invalid_cedar_snippet_in_plan");
+    expect(snippetGotcha).toBeDefined();
+    expect(snippetGotcha!.severity).toBe("high");
+    expect(snippetGotcha!.description).toContain("cedar_snippet");
+  });
+
+  it("A18 — valid cedar_snippet in policy_new step does not surface invalid snippet gotcha", async () => {
+    const planWithGoodSnippet = {
+      ...PLAN_FORBID_SENSITIVE,
+      required_changes: [
+        {
+          step: 1,
+          type: "policy_new",
+          description: "New policy with valid Cedar",
+          cedar_snippet: `permit(principal in DocMgmt::Role::"admin", action, resource);`,
+          avp_update_mode: "new_policy_via_create_policy",
+        },
+      ],
+      gotchas: [],
+    };
+
+    const result = await handleAdvise({ intent: "add policy" }, mockSampler(planWithGoodSnippet));
+
+    expect(result.error).toBeUndefined();
+    const snippetGotcha = result.gotchas?.find(g => g.id === "invalid_cedar_snippet_in_plan");
+    expect(snippetGotcha).toBeUndefined();
+  });
 });
