@@ -5,6 +5,7 @@ import { handleAuthorize } from "./tools/authorize.js";
 import { handleValidate } from "./tools/validate.js";
 import { handleValidateSchema } from "./tools/validate-schema.js";
 import { handleDiffSchema } from "./tools/diff-schema.js";
+import { handleValidateEntities } from "./tools/validate-entities.js";
 import { handleFormat } from "./tools/format.js";
 import { handleTranslate } from "./tools/translate.js";
 import { handleExplainMany } from "./tools/explain.js";
@@ -195,6 +196,26 @@ export function createServer(): McpServer {
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
+    }
+  );
+
+  server.tool(
+    "cedar_validate_entities",
+    "Validate a Cedar entities JSON array against a schema. Returns per-entity errors classified by kind: unknown_type, missing_required_attribute, type_mismatch, unknown_attribute, parse_error. Schema is optional — without it only the JSON shape is checked.",
+    {
+      entities: z.string().describe("JSON array of entity objects with uid, attrs, and parents"),
+      schema: z.string().optional().describe("Cedar schema (JSON or .cedarschema) — enables type validation"),
+      schema_ref: z.string().optional().describe("cedar:// URI to load schema, e.g. cedar://schema/blue"),
+    },
+    async (input) => {
+      let schema = input.schema;
+      if (!schema && input.schema_ref) {
+        const resolved = resolveRef(input.schema_ref);
+        if ("error" in resolved) return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }] };
+        schema = resolved.content;
+      }
+      const result = await handleValidateEntities({ entities: input.entities, schema });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
   );
 
