@@ -1,5 +1,5 @@
 import { isAuthorized } from "@cedar-policy/cedar-wasm/nodejs";
-import type { AuthorizationCall, Entities, Schema } from "@cedar-policy/cedar-wasm/nodejs";
+import type { AuthorizationCall, CedarValueJson, Entities, Schema } from "@cedar-policy/cedar-wasm/nodejs";
 
 export interface AuthorizeInput {
   policies: string;
@@ -48,7 +48,7 @@ export async function handleAuthorize(input: AuthorizeInput): Promise<AuthorizeR
     }
   }
 
-  let context: Record<string, unknown> = {};
+  let context: Record<string, CedarValueJson> = {};
   if (input.context) {
     try {
       context = JSON.parse(input.context);
