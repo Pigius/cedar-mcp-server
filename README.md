@@ -63,6 +63,79 @@ First run pulls the package via `npx`. Subsequent runs use the npm cache.
 
 ---
 
+## Working with production policies
+
+If your Cedar policies live on disk, configure MCP roots once and the server reads them directly. No more pasting policy text into every tool call.
+
+### Policy store layout
+
+Each root directory must follow this structure:
+
+```
+my-store/
+  policies/
+    admin.cedar
+    editor.cedar
+    viewer.cedar
+  schema.cedarschema     ← Cedar schema text (preferred)
+  schema.json            ← Cedar JSON schema (alternative)
+```
+
+### Configure roots in Claude Code
+
+Add roots to `.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "cedar": {
+      "command": "npx",
+      "args": ["-y", "cedar-mcp-server"],
+      "roots": [
+        { "uri": "file:///path/to/my-store", "name": "production" },
+        { "uri": "file:///path/to/staging-store", "name": "staging" }
+      ]
+    }
+  }
+}
+```
+
+The root name (`"production"`, `"staging"`) becomes the store identifier used in all tool calls.
+
+### Use resources instead of inline text
+
+Once roots are configured, use `cedar://` references instead of pasting policy text:
+
+```
+Validate the production policies:
+  policy_ref: cedar://policies/production
+  schema_ref: cedar://schema/production
+```
+
+```
+Explain the admin policy in production:
+  policy_ref: cedar://policies/production/admin
+```
+
+Both `policy_ref` and `schema_ref` work in `cedar_validate`, `cedar_authorize`, and `cedar_explain`. Inline text still works — pass either form.
+
+### Compare two policy stores
+
+Before promoting changes from staging to production:
+
+```
+Compare staging and production policies.
+  blue: production
+  green: staging
+```
+
+`cedar_diff_policy_stores` returns:
+- Which policies were added, removed, or modified
+- For each modification: whether it can be applied in-place in AVP or requires delete-and-recreate
+- Optional behavioral diff: pass a list of authorization requests to see which decisions would change
+
+---
+
 ## Coming from AWS Verified Permissions?
 
 If you're already using AVP, your entity JSON looks different from Cedar's open-source format. `cedar_authorize` detects and converts all three AVP SDK formats automatically.

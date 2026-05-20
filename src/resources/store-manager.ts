@@ -113,7 +113,13 @@ export class StoreManager {
 
   requireStore(name: string): PolicyStore {
     const store = this.stores.get(name);
-    if (!store) throw new Error(`Store not found: "${name}". Available stores: ${[...this.stores.keys()].join(", ") || "none"}`);
+    if (!store) {
+      const available = [...this.stores.keys()].join(", ") || "none";
+      const hint = this.stores.size === 0
+        ? " No roots are configured. Add MCP roots in your client settings, each pointing at a directory with a policies/ subdirectory and a schema.cedarschema or schema.json file."
+        : ` Available stores: ${available}.`;
+      throw new Error(`Store not found: "${name}".${hint}`);
+    }
     return store;
   }
 }
