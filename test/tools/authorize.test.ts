@@ -204,6 +204,64 @@ describe("cedar_authorize — format detection and auto-normalization", () => {
     expect(result.format_detected).toBe("cedar");
   });
 
+  it("camelCase AVP format (Python/JS SDK) — auto-normalized and evaluated correctly", async () => {
+    const result = await handleAuthorize({
+      policies: `permit(principal in DocMgmt::Role::"admin", action, resource);`,
+      principal: { entityType: "DocMgmt::User", entityId: "alice" } as unknown as string,
+      action: { actionType: "DocMgmt::Action", actionId: "READ" } as unknown as string,
+      resource: { entityType: "DocMgmt::Document", entityId: "doc-1" } as unknown as string,
+      entities: JSON.stringify([
+        {
+          identifier: { entityType: "DocMgmt::User", entityId: "alice" },
+          attributes: {},
+          parents: [{ entityType: "DocMgmt::Role", entityId: "admin" }],
+        },
+        {
+          identifier: { entityType: "DocMgmt::Role", entityId: "admin" },
+          attributes: {},
+          parents: [],
+        },
+        {
+          identifier: { entityType: "DocMgmt::Document", entityId: "doc-1" },
+          attributes: {},
+          parents: [],
+        },
+      ]),
+    });
+
+    expect(result.decision).toBe("Allow");
+    expect(result.format_detected).toBe("avp");
+  });
+
+  it("PascalCase AVP format (official API / AWS console) — auto-normalized and evaluated correctly", async () => {
+    const result = await handleAuthorize({
+      policies: `permit(principal in DocMgmt::Role::"admin", action, resource);`,
+      principal: { EntityType: "DocMgmt::User", EntityId: "alice" } as unknown as string,
+      action: { ActionType: "DocMgmt::Action", ActionId: "READ" } as unknown as string,
+      resource: { EntityType: "DocMgmt::Document", EntityId: "doc-1" } as unknown as string,
+      entities: JSON.stringify([
+        {
+          Identifier: { EntityType: "DocMgmt::User", EntityId: "alice" },
+          Attributes: {},
+          Parents: [{ EntityType: "DocMgmt::Role", EntityId: "admin" }],
+        },
+        {
+          Identifier: { EntityType: "DocMgmt::Role", EntityId: "admin" },
+          Attributes: {},
+          Parents: [],
+        },
+        {
+          Identifier: { EntityType: "DocMgmt::Document", EntityId: "doc-1" },
+          Attributes: {},
+          Parents: [],
+        },
+      ]),
+    });
+
+    expect(result.decision).toBe("Allow");
+    expect(result.format_detected).toBe("avp");
+  });
+
   it("AVP typed attributes with non-string policy condition work correctly after unwrap", async () => {
     // Policy checks principal.name — must be unwrapped from { string: "alice" } to "alice"
     const policy = `permit(principal, action, resource) when { principal.name == "alice" };`;
