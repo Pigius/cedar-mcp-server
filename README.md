@@ -1068,6 +1068,21 @@ Other MCP clients that support the MCP 1.0 protocol should work for all tools ex
 
 ---
 
+## Known limitations
+
+This server runs Cedar 4.11.0 through `@cedar-policy/cedar-wasm`. That WASM package does not expose Cedar's symbolic-analysis backend (`cedar-policy-symcc`), so the following capabilities are NOT available in this server:
+
+- **Semantic equivalence between two policy sets.** "Do these two policy sets produce the same decision for every well-formed request?" `cedar_diff_policy_stores` performs a structural diff plus an optional behavioral diff over a request matrix you supply, but neither proves logical equivalence.
+- **Full shadowing detection.** `cedar_diff_policy_stores` and Cedar's own `validate` surface some shadowing cases, but a complete pairwise shadowing analysis (does policy A's match condition imply policy B's?) requires SMT.
+- **Full reachability / dead-policy analysis.** Cedar's WASM `validate` surfaces dead policies that fail trivially (schema-mismatched scopes, literal-folding unsat such as `when { 1 == 2 }`, type-incompatible expressions). It does not catch attribute-value contradictions like `when { age > 18 && age < 10 }`.
+- **`never-errors` verification.** Proving that a policy can never produce a runtime error.
+
+Cedar's official CLI ships these as 11 verification subcommands under `cedar symcc`, but only when built with `cargo install cedar-policy-cli --features analyze` and used together with the CVC5 SMT solver. That install chain is incompatible with the `npx`-only positioning of this server, so the SMT tools are not bundled today.
+
+**Future direction:** if upstream Cedar exposes `cedar-policy-symcc` through `@cedar-policy/cedar-wasm`, the equivalent tools land here directly. Otherwise a companion package (e.g. `cedar-mcp-server-analyze`) that shells out to a locally-installed `cedar symcc` is the most likely path. No timeline.
+
+---
+
 ## Versioning policy
 
 SemVer for v1.0+. Major versions may introduce breaking changes to tool input/output schemas. Minor versions add capabilities without breaking existing inputs. Patches are bug fixes.
