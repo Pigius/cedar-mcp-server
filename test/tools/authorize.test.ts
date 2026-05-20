@@ -110,3 +110,124 @@ describe("cedar_authorize", () => {
     expect(result.errors).toHaveLength(0);
   });
 });
+
+describe("cedar_authorize — format detection and auto-normalization", () => {
+  // AVP format entities: identifier key + typed attribute wrappers + entity_type/entity_id parents
+  const AVP_ENTITIES = JSON.stringify([
+    {
+      identifier: { entity_type: "DocMgmt::User", entity_id: "alice" },
+      attributes: {
+        name: { string: "Alice Smith" },
+        email: { string: "alice@example.com" },
+      },
+      parents: [{ entity_type: "DocMgmt::Role", entity_id: "admin" }],
+    },
+    {
+      identifier: { entity_type: "DocMgmt::User", entity_id: "bob" },
+      attributes: {
+        name: { string: "Bob Jones" },
+        email: { string: "bob@example.com" },
+      },
+      parents: [{ entity_type: "DocMgmt::Role", entity_id: "editor" }],
+    },
+    {
+      identifier: { entity_type: "DocMgmt::Role", entity_id: "admin" },
+      attributes: {},
+      parents: [],
+    },
+    {
+      identifier: { entity_type: "DocMgmt::Role", entity_id: "editor" },
+      attributes: {},
+      parents: [],
+    },
+    {
+      identifier: { entity_type: "DocMgmt::Document", entity_id: "doc-public" },
+      attributes: {
+        owner: { string: "alice" },
+        classification: { string: "public" },
+      },
+      parents: [],
+    },
+    {
+      identifier: { entity_type: "DocMgmt::Document", entity_id: "doc-secret" },
+      attributes: {
+        owner: { string: "alice" },
+        classification: { string: "top_secret" },
+      },
+      parents: [],
+    },
+  ]);
+
+  // AVP-style principal/action/resource objects
+  const avpPrincipal = { entity_type: "DocMgmt::User", entity_id: "alice" };
+  const avpAction = { action_type: "DocMgmt::Action", action_id: "READ" };
+  const avpResource = { entity_type: "DocMgmt::Document", entity_id: "doc-public" };
+
+  it("allows alice (admin) using AVP entity format — auto-normalized", async () => {
+    const result = await handleAuthorize({
+      policies: POLICIES,
+      principal: avpPrincipal as unknown as string,
+      action: avpAction as unknown as string,
+      resource: avpResource as unknown as string,
+      entities: AVP_ENTITIES,
+    });
+
+    expect(result.decision).toBe("Allow");
+    expect(result.format_detected).toBe("avp");
+    expect(result.format_note).toContain("AVP format");
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("denies bob (editor) reading top-secret doc — AVP format, forbid still fires", async () => {
+    const result = await handleAuthorize({
+      policies: POLICIES,
+      principal: { entity_type: "DocMgmt::User", entity_id: "bob" } as unknown as string,
+      action: { action_type: "DocMgmt::Action", action_id: "READ" } as unknown as string,
+      resource: { entity_type: "DocMgmt::Document", entity_id: "doc-secret" } as unknown as string,
+      entities: AVP_ENTITIES,
+    });
+
+    expect(result.decision).toBe("Deny");
+    expect(result.format_detected).toBe("avp");
+  });
+
+  it("reports cedar format when Cedar string literals are passed", async () => {
+    const result = await handleAuthorize({
+      policies: POLICIES,
+      principal: 'DocMgmt::User::"alice"',
+      action: 'DocMgmt::Action::"READ"',
+      resource: 'DocMgmt::Document::"doc-public"',
+      entities: JSON.stringify(ENTITIES),
+    });
+
+    expect(result.decision).toBe("Allow");
+    expect(result.format_detected).toBe("cedar");
+  });
+
+  it("AVP typed attributes with non-string policy condition work correctly after unwrap", async () => {
+    // Policy checks principal.name — must be unwrapped from { string: "alice" } to "alice"
+    const policy = `permit(principal, action, resource) when { principal.name == "alice" };`;
+    const result = await handleAuthorize({
+      policies: policy,
+      principal: { entity_type: "MyApp::User", entity_id: "user-1" } as unknown as string,
+      action: { action_type: "MyApp::Action", action_id: "READ" } as unknown as string,
+      resource: { entity_type: "MyApp::Resource", entity_id: "res-1" } as unknown as string,
+      entities: JSON.stringify([
+        {
+          identifier: { entity_type: "MyApp::User", entity_id: "user-1" },
+          attributes: { name: { string: "alice" } },
+          parents: [],
+        },
+        {
+          identifier: { entity_type: "MyApp::Resource", entity_id: "res-1" },
+          attributes: {},
+          parents: [],
+        },
+      ]),
+    });
+
+    // Without unwrapping: name would be { string: "alice" } (a Record), not "alice" — policy would not match
+    expect(result.decision).toBe("Allow");
+    expect(result.format_detected).toBe("avp");
+  });
+});
