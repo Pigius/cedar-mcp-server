@@ -14,7 +14,7 @@ Do not expose this server over a network without an authentication layer in fron
 
 ## What the server does NOT do
 
-- Makes no calls to AWS APIs or AWS Verified Permissions.
+- Makes no calls to AWS APIs or Amazon Verified Permissions.
 - Makes no outbound network requests of any kind.
 - Does not write, modify, or delete files on disk.
 - Does not execute arbitrary code from policy inputs.

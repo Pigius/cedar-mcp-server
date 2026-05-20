@@ -118,7 +118,7 @@ Expected: a complete entity payload with principal outside the viewer role.
 ### cedar_check_policy_change
 
 ```
-Can this policy change be applied in-place in AWS Verified Permissions?
+Can this policy change be applied in-place in Amazon Verified Permissions?
 
 Old policy:
 permit (

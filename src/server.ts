@@ -170,7 +170,7 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_check_policy_change",
-    "Check whether a Cedar policy change can be applied in-place in AWS Verified Permissions, or requires deleting and recreating the policy. Based on Cedar/AVP immutability rules.",
+    "Check whether a Cedar policy change can be applied in-place in Amazon Verified Permissions, or requires deleting and recreating the policy. Based on Cedar/AVP immutability rules.",
     {
       old_policy: z.string().describe("Original Cedar policy text"),
       new_policy: z.string().describe("Modified Cedar policy text"),

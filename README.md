@@ -364,7 +364,7 @@ Explains a Cedar policy in plain English with pattern detection.
 
 ### `cedar_check_policy_change`
 
-Determines whether a policy modification can be applied in-place in AWS Verified Permissions or requires delete-and-recreate.
+Determines whether a policy modification can be applied in-place in Amazon Verified Permissions or requires delete-and-recreate.
 
 **Inputs:**
 
@@ -919,7 +919,7 @@ If you call `cedar_diff_policy_stores` or use a `cedar://` reference but haven't
 
 ---
 
-## Coming from AWS Verified Permissions?
+## Coming from Amazon Verified Permissions?
 
 If you're already using AVP, your entity JSON looks different from Cedar's open-source format. `cedar_authorize` detects and converts all three AVP SDK formats automatically.
 
@@ -1118,6 +1118,6 @@ Apache 2.0, same as Cedar itself. See [`LICENSE`](./LICENSE).
 ## Acknowledgments
 
 - [Cedar team at AWS](https://github.com/cedar-policy/cedar) for the open-source Cedar engine and the `@cedar-policy/cedar-wasm` bindings
-- [AWS Verified Permissions team](https://aws.amazon.com/verified-permissions/) for the production service this server complements
+- [Amazon Verified Permissions team](https://aws.amazon.com/verified-permissions/) for the production service this server complements
 - [Anthropic MCP team](https://modelcontextprotocol.io) for the protocol and SDK
 - Built by [Daniel Aniszkiewicz](https://builder.aws.com/community/heroes/DanielAniszkiewicz), AWS Hero

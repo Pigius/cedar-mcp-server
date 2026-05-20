@@ -111,7 +111,7 @@ Expected: a principal with `plan: "pro"` or `"enterprise"`, with an explanation 
 ### cedar_check_policy_change
 
 ```
-Can this change be applied in-place in AWS Verified Permissions?
+Can this change be applied in-place in Amazon Verified Permissions?
 
 Old policy:
 permit(principal, action, resource) when { principal.name == resource.owner_id };

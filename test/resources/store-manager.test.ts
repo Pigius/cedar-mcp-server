@@ -207,4 +207,102 @@ describe("StoreManager", () => {
       expect(manager.isPathAllowed("/etc/passwd")).toBe(false);
     });
   });
+
+  describe("listEntities", () => {
+    it("returns entity file IDs (filenames without .json extension), sorted", () => {
+      const storePath = createTestStore(tmpDir, "blue");
+      mkdirSync(join(storePath, "entities"), { recursive: true });
+      writeFileSync(join(storePath, "entities", "users.json"), JSON.stringify([]));
+      writeFileSync(join(storePath, "entities", "docs.json"), JSON.stringify([]));
+      manager.loadFromRoots([{ uri: `file://${storePath}`, name: "blue" }]);
+      expect(manager.listEntities("blue")).toEqual(["docs", "users"]);
+    });
+
+    it("returns empty array when entities directory does not exist", () => {
+      const storePath = createTestStore(tmpDir, "blue");
+      manager.loadFromRoots([{ uri: `file://${storePath}`, name: "blue" }]);
+      expect(manager.listEntities("blue")).toEqual([]);
+    });
+
+    it("throws for unknown store name", () => {
+      expect(() => manager.listEntities("nonexistent")).toThrow(/store.*not found/i);
+    });
+  });
+
+  describe("readEntities", () => {
+    it("returns entity file content as text", () => {
+      const storePath = createTestStore(tmpDir, "blue");
+      mkdirSync(join(storePath, "entities"), { recursive: true });
+      const payload = JSON.stringify([{ uid: { type: "DocMgmt::User", id: "alice" }, attrs: {}, parents: [] }]);
+      writeFileSync(join(storePath, "entities", "users.json"), payload);
+      manager.loadFromRoots([{ uri: `file://${storePath}`, name: "blue" }]);
+      expect(manager.readEntities("blue", "users")).toBe(payload);
+    });
+
+    it("throws for unknown entity file ID", () => {
+      const storePath = createTestStore(tmpDir, "blue");
+      mkdirSync(join(storePath, "entities"), { recursive: true });
+      manager.loadFromRoots([{ uri: `file://${storePath}`, name: "blue" }]);
+      expect(() => manager.readEntities("blue", "ghost")).toThrow(/entity file.*not found/i);
+    });
+
+    it("throws for path traversal in entity file ID", () => {
+      const storePath = createTestStore(tmpDir, "blue");
+      manager.loadFromRoots([{ uri: `file://${storePath}`, name: "blue" }]);
+      expect(() => manager.readEntities("blue", "..")).toThrow(/Invalid entity file ID/i);
+      expect(() => manager.readEntities("blue", "../../../etc/passwd")).toThrow(/Invalid entity file ID/i);
+    });
+
+    it("throws for unknown store", () => {
+      expect(() => manager.readEntities("ghost", "users")).toThrow(/store.*not found/i);
+    });
+  });
+
+  describe("readAllEntities", () => {
+    it("merges entity arrays from all files into one JSON array", () => {
+      const storePath = createTestStore(tmpDir, "blue");
+      mkdirSync(join(storePath, "entities"), { recursive: true });
+      writeFileSync(
+        join(storePath, "entities", "users.json"),
+        JSON.stringify([{ uid: { type: "DocMgmt::User", id: "alice" }, attrs: {}, parents: [] }])
+      );
+      writeFileSync(
+        join(storePath, "entities", "docs.json"),
+        JSON.stringify([{ uid: { type: "DocMgmt::Document", id: "doc1" }, attrs: {}, parents: [] }])
+      );
+      manager.loadFromRoots([{ uri: `file://${storePath}`, name: "blue" }]);
+      const merged = JSON.parse(manager.readAllEntities("blue")) as Array<{ uid: { type: string } }>;
+      expect(merged.length).toBe(2);
+      const types = merged.map((e) => e.uid.type);
+      expect(types).toContain("DocMgmt::User");
+      expect(types).toContain("DocMgmt::Document");
+    });
+
+    it("returns empty JSON array when entities directory is absent", () => {
+      const storePath = createTestStore(tmpDir, "blue");
+      manager.loadFromRoots([{ uri: `file://${storePath}`, name: "blue" }]);
+      const result = manager.readAllEntities("blue");
+      expect(JSON.parse(result)).toEqual([]);
+    });
+
+    it("throws when an entity file contains a JSON object instead of an array", () => {
+      // Falsifying input: an object is valid JSON but not a valid entity array — must error clearly.
+      const storePath = createTestStore(tmpDir, "blue");
+      mkdirSync(join(storePath, "entities"), { recursive: true });
+      writeFileSync(
+        join(storePath, "entities", "bad.json"),
+        JSON.stringify({ uid: { type: "DocMgmt::User", id: "alice" }, attrs: {}, parents: [] })
+      );
+      manager.loadFromRoots([{ uri: `file://${storePath}`, name: "blue" }]);
+      expect(() => manager.readAllEntities("blue")).toThrow(/must contain a JSON array/i);
+    });
+
+    it("throws when an entity file contains invalid JSON", () => {
+      const storePath = createTestStore(tmpDir, "blue");
+      mkdirSync(join(storePath, "entities"), { recursive: true });
+      writeFileSync(join(storePath, "entities", "broken.json"), "{ not valid json");
+      manager.loadFromRoots([{ uri: `file://${storePath}`, name: "blue" }]);
+      expect(() => manager.readAllEntities("blue")).toThrow(/invalid JSON/i);
+    });
+  });
 });

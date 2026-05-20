@@ -137,6 +137,49 @@ export class StoreManager {
     return JSON.parse(raw) as { template_id: string; slot_values: Record<string, string> };
   }
 
+  // ─── Entities access ────────────────────────────────────────────────────────
+
+  listEntities(storeName: string): string[] {
+    const store = this.requireStore(storeName);
+    const entitiesDir = join(store.path, "entities");
+    if (!existsSync(entitiesDir)) return [];
+    return readdirSync(entitiesDir)
+      .filter((f) => f.endsWith(".json"))
+      .map((f) => f.replace(/\.json$/, ""))
+      .sort();
+  }
+
+  readEntities(storeName: string, entityFileId: string): string {
+    const store = this.requireStore(storeName);
+    if (!/^[a-zA-Z0-9_-]+$/.test(entityFileId)) {
+      throw new Error(`Invalid entity file ID: "${entityFileId}". Entity file IDs must contain only letters, digits, hyphens, and underscores.`);
+    }
+    const filePath = join(store.path, "entities", `${entityFileId}.json`);
+    if (!existsSync(filePath)) {
+      throw new Error(`Entity file not found: "${entityFileId}" in store "${storeName}"`);
+    }
+    return readFileSync(filePath, "utf8");
+  }
+
+  readAllEntities(storeName: string): string {
+    const ids = this.listEntities(storeName);
+    const merged: unknown[] = [];
+    for (const id of ids) {
+      const raw = this.readEntities(storeName, id);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        throw new Error(`Entity file "${id}" in store "${storeName}" contains invalid JSON.`);
+      }
+      if (!Array.isArray(parsed)) {
+        throw new Error(`Entity file "${id}" in store "${storeName}" must contain a JSON array at the top level, got ${typeof parsed}.`);
+      }
+      merged.push(...parsed);
+    }
+    return JSON.stringify(merged);
+  }
+
   // ─── Schema access ──────────────────────────────────────────────────────────
 
   readSchema(storeName: string): string {
