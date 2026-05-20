@@ -92,6 +92,26 @@ describe("cedar_validate_entities", () => {
     expect(e.attribute).toBe("bogus");
   });
 
+  it("VE6: entity with parent of unknown/disallowed type → disallowed_parent_type error", async () => {
+    const bad = [
+      {
+        uid: { type: "DocMgmt::User", id: "alice" },
+        attrs: { name: "Alice", email: "a@b.c" },
+        parents: [{ type: "DocMgmt::Unicorn", id: "rainbow" }],
+      },
+    ];
+
+    const result = await handleValidateEntities({
+      entities: JSON.stringify(bad),
+      schema: SCHEMA_STR,
+    });
+
+    expect(result.valid).toBe(false);
+    const e = result.errors[0];
+    expect(e.error_kind).toBe("disallowed_parent_type");
+    expect(e.entity_uid).toContain("alice");
+  });
+
   it("VE7: malformed entities JSON → parse_error", async () => {
     const result = await handleValidateEntities({
       entities: "{ not valid json",

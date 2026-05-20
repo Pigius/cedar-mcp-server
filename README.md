@@ -10,7 +10,7 @@
 
 ## What it does
 
-Nine tools across three categories:
+Sixteen tools across four categories:
 
 **Validation and evaluation** — work with Cedar policies without leaving the conversation.
 
@@ -39,11 +39,19 @@ Nine tools across three categories:
 | [`cedar_list_templates`](#cedar_list_templates) | Lists all templates in a policy store (reads from `templates/` subdirectory) |
 | [`cedar_list_template_links`](#cedar_list_template_links) | Lists all template-linked policy instances in a store (reads from `template-links/` subdirectory) |
 
+**Schema and entities** — work with schemas and entity stores independently of policies.
+
+| Tool | What it does |
+|------|-------------|
+| [`cedar_validate_schema`](#cedar_validate_schema) | Validates a Cedar schema in isolation (no policies required); returns parse errors and namespace/type counts |
+| [`cedar_diff_schema`](#cedar_diff_schema) | Structural diff of two schemas with AVP-aware risk classification per change (safe/review/breaking) |
+| [`cedar_validate_entities`](#cedar_validate_entities) | Validates a Cedar entities JSON array against a schema; classifies errors by kind (unknown_type, missing_required_attribute, type_mismatch, unknown_attribute) |
+
 **Diffing** — compare two policy stores before promoting changes to production.
 
 | Tool | What it does |
 |------|-------------|
-| [`cedar_diff_policy_stores`](#cedar_diff_policy_stores) | Structural and optional behavioral diff between two policy stores with AVP immutability classification |
+| [`cedar_diff_policy_stores`](#cedar_diff_policy_stores) | Structural and optional behavioral diff between two policy stores with AVP immutability classification (now embeds structured `schema_diff` from `cedar_diff_schema`) |
 
 ---
 
@@ -647,7 +655,15 @@ Structural and optional behavioral diff between two policy stores. Requires MCP 
       "recommendation": "Requires delete-and-recreate."
     }
   ],
-  "schema_changed": false,
+  "schema_diff": {
+    "namespaces_added": [],
+    "namespaces_removed": [],
+    "entity_types": { "added": [], "removed": [], "modified": [] },
+    "actions": { "added": [], "removed": [], "modified": [] },
+    "common_types": { "added": [], "removed": [], "modified": [] },
+    "summary": "No schema changes detected.",
+    "risk_level": "safe"
+  },
   "behavioral_diff": [
     {
       "principal": "DocMgmt::User::\"contractor-1\"",
@@ -662,7 +678,178 @@ Structural and optional behavioral diff between two policy stores. Requires MCP 
 }
 ```
 
+The `schema_diff` field carries the full structured output of [`cedar_diff_schema`](#cedar_diff_schema). When schemas differ, expect entries in `entity_types`, `actions`, or `common_types` with `risk` classifications attached.
+
 **When to use:** before promoting any policy changes from staging to production. The structural diff tells you what changed and how to deploy it. The behavioral diff tells you which authorization decisions would actually change.
+
+---
+
+### `cedar_validate_schema`
+
+Validates a Cedar schema in isolation, without requiring any policies. Useful for the schema-first workflow: shape the entity model before writing the first policy.
+
+**Inputs:**
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `schema` | one of | Cedar schema text (JSON object or `.cedarschema` text). Format auto-detected. |
+| `schema_ref` | one of | `cedar://schema/{store}` URI for a configured policy store. |
+
+Exactly one of `schema` or `schema_ref` is required.
+
+**Output shape:**
+
+```json
+{
+  "valid": true,
+  "format": "cedarschema",
+  "namespaces": ["DocMgmt"],
+  "entity_type_count": 4,
+  "action_count": 3,
+  "common_type_count": 0,
+  "errors": []
+}
+```
+
+When invalid:
+
+```json
+{
+  "valid": false,
+  "format": "cedarschema",
+  "namespaces": [],
+  "entity_type_count": 0,
+  "action_count": 0,
+  "common_type_count": 0,
+  "errors": [
+    {
+      "message": "failed to parse schema from string: unexpected token `not`",
+      "source_location": { "start": 0, "end": 3, "label": "expected `@`, `action`, `entity`, `namespace`, or `type`" }
+    }
+  ]
+}
+```
+
+**When to use:**
+- before writing the first policy — confirm the schema you sketched parses correctly
+- before pushing schema changes to AVP via `PutSchema` — sanity-check syntactically
+- as a fast check inside an agentic loop that's building a schema iteratively
+
+---
+
+### `cedar_diff_schema`
+
+Structural diff of two Cedar schemas with AVP-aware risk classification per change. Replaces the hand-wavy "schemas differ, review carefully" pattern with a structured payload that says exactly what changed and how risky each change is for existing policies.
+
+**Inputs:**
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `blue` | yes | Baseline schema. Inline schema text (JSON or `.cedarschema`) OR a `cedar://schema/{store}` URI. |
+| `green` | yes | Proposed schema. Same input forms as `blue`. |
+
+The tool auto-detects `cedar://` URIs and resolves them via configured policy stores.
+
+**Output shape:**
+
+```json
+{
+  "namespaces_added": [],
+  "namespaces_removed": [],
+  "entity_types": {
+    "added": [{ "namespace": "DocMgmt", "name": "Tag" }],
+    "removed": [],
+    "modified": [
+      {
+        "namespace": "DocMgmt",
+        "name": "User",
+        "attribute_changes": [
+          {
+            "attr": "phone",
+            "change": "added",
+            "new_type": "String",
+            "risk": "breaking",
+            "reason": "Required attribute added: existing entities/requests without this field will fail validation."
+          }
+        ]
+      }
+    ]
+  },
+  "actions": { "added": [], "removed": [], "modified": [] },
+  "common_types": { "added": [], "removed": [], "modified": [] },
+  "summary": "Schema diff: 1 entity type(s) added, 1 entity type(s) modified (1 BREAKING).",
+  "risk_level": "breaking"
+}
+```
+
+**Risk classification rules** — each change carries `risk: safe | review | breaking` plus a `reason` string. The rules:
+
+| Change | Risk | Why |
+|---|---|---|
+| Entity type added | safe | No existing policy references it |
+| Entity type removed | breaking | Policies referencing the type fail validation |
+| Optional attribute added | safe | Existing policies don't reference it |
+| Required attribute added | breaking | Existing entities lack the field |
+| Attribute removed | breaking | Policies referencing it fail validation |
+| Attribute type changed | breaking | Policies expecting the old type fail evaluation |
+| Optional → required | breaking | Existing entities without the field fail |
+| Required → optional | safe | Existing entities still satisfy the constraint |
+| `memberOfTypes` added | review | Hierarchy widens; `in` checks may match more entities |
+| `memberOfTypes` removed | breaking | Policies using `in` against removed parents fail |
+| Action added | safe | No existing policy targets it |
+| Action removed | breaking | Policies referencing it become invalid |
+| Action `principalTypes` widened | review | Policy effect may change |
+| Action `principalTypes` narrowed | breaking | Existing policies for the removed type fail |
+| Action `resourceTypes` widened / narrowed | review / breaking | Same as principalTypes |
+| Action context attribute follows entity-attribute rules | — | — |
+| Common type added | safe | Nothing references it yet |
+| Common type removed | review | If unreferenced, safe; if referenced, breaking. Audit. |
+| Common type modified | review | Default to review; precise impact depends on references |
+
+`risk_level` on the top-level result is the worst risk across all changes.
+
+**When to use:**
+- before promoting a schema change to production — see exactly what's at risk
+- as the structured backbone of `cedar_diff_policy_stores` (embedded automatically there)
+- inside an agentic policy review — let the agent reason about whether the schema change is deployable as-is
+
+---
+
+### `cedar_validate_entities`
+
+Validates a Cedar entities JSON array against a schema, returning per-entity errors classified by kind. Useful for catching entity-store drift before it hits authorization at runtime.
+
+**Inputs:**
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `entities` | yes | JSON array of entity objects with `uid`, `attrs`, `parents` |
+| `schema` | no | Cedar schema (JSON or `.cedarschema`) — enables type validation. Without it, only JSON shape is checked. |
+| `schema_ref` | no | `cedar://schema/{store}` URI alternative to inline `schema` |
+
+**Output shape:**
+
+```json
+{
+  "valid": false,
+  "entity_count": 1,
+  "errors": [
+    {
+      "entity_uid": "DocMgmt::User::\"alice\"",
+      "error_kind": "type_mismatch",
+      "attribute": "name",
+      "message": "entity does not conform to the schema: in attribute `name` on `DocMgmt::User::\"alice\"`, type mismatch: value was expected to have type string, but it actually has type long: `42`"
+    }
+  ]
+}
+```
+
+`error_kind` is one of: `unknown_type`, `missing_required_attribute`, `type_mismatch`, `unknown_attribute`, `disallowed_parent_type`, `parse_error`, `other`. The `attribute` field is present for attribute-related errors. `disallowed_parent_type` fires when an entity's `parents` array contains a type the schema doesn't allow as an ancestor for that entity type.
+
+**When to use:**
+- when working with entity dumps from AVP `BatchGet` or custom entity stores
+- before running `cedar_authorize` on a request that includes user-supplied entities — catch shape issues early
+- inside a CI pipeline that publishes an entity snapshot — fail fast on drift
 
 ---
 

@@ -11,7 +11,7 @@ export type EntityErrorKind =
   | "missing_required_attribute"
   | "type_mismatch"
   | "unknown_attribute"
-  | "orphan_parent"
+  | "disallowed_parent_type"
   | "parse_error"
   | "other";
 
@@ -42,6 +42,7 @@ const RE_TYPE_MISMATCH = /in attribute `([^`]+)` on `([^`]+)`, type mismatch/;
 const RE_MISSING_REQUIRED = /expected entity `([^`]+)` to have attribute `([^`]+)`, but it does not/;
 const RE_UNKNOWN_TYPE = /entity `([^`]+)` has type `[^`]+` which is not declared in the schema/;
 const RE_UNKNOWN_ATTR = /attribute `([^`]+)` on `([^`]+)` should not exist according to the schema/;
+const RE_DISALLOWED_PARENT = /`([^`]+)` is not allowed to have an ancestor of type `[^`]+` according to the schema/;
 
 function classifyError(message: string): EntityError {
   let m: RegExpMatchArray | null;
@@ -62,6 +63,9 @@ function classifyError(message: string): EntityError {
   }
   if ((m = message.match(RE_UNKNOWN_ATTR))) {
     return { entity_uid: m[2], error_kind: "unknown_attribute", attribute: m[1], message };
+  }
+  if ((m = message.match(RE_DISALLOWED_PARENT))) {
+    return { entity_uid: m[1], error_kind: "disallowed_parent_type", message };
   }
 
   return { entity_uid: "", error_kind: "other", message };
