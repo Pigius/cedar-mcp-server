@@ -162,6 +162,22 @@ describe("StoreManager", () => {
     });
   });
 
+  describe("security", () => {
+    it("rejects non-file:// URIs at loadFromRoots time (does not silently accept)", () => {
+      manager.loadFromRoots([{ uri: "https://example.com/policies", name: "remote" }]);
+      // Non-file:// root should be skipped, not silently accepted
+      expect(manager.listStoreNames()).not.toContain("remote");
+    });
+
+    it("rejects policy IDs with path traversal characters", () => {
+      const storePath = createTestStore(tmpDir, "blue");
+      manager.loadFromRoots([{ uri: `file://${storePath}`, name: "blue" }]);
+      expect(() => manager.readPolicy("blue", "..")).toThrow(/Invalid policy ID/i);
+      expect(() => manager.readPolicy("blue", "../../../etc/passwd")).toThrow(/Invalid policy ID/i);
+      expect(() => manager.readPolicy("blue", "admin/subdir")).toThrow(/Invalid policy ID/i);
+    });
+  });
+
   describe("isPathAllowed", () => {
     it("returns true for paths inside a loaded root", () => {
       const storePath = createTestStore(tmpDir, "blue");

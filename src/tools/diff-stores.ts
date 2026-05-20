@@ -88,7 +88,15 @@ export async function handleDiffStores(
           old_policy: blueContent,
           new_policy: greenContent,
         });
-        if (!changeResult.error && changeResult.changes.length > 0) {
+        if (changeResult.error) {
+          // Parse error on one or both sides — report as modified with error context
+          policies_modified.push({
+            policy_id: id,
+            can_update_in_place: false,
+            changes: [],
+            recommendation: `Could not diff policy "${id}": ${changeResult.error}`,
+          });
+        } else if (changeResult.changes.length > 0) {
           policies_modified.push({
             policy_id: id,
             can_update_in_place: changeResult.can_update_in_place,
@@ -100,6 +108,8 @@ export async function handleDiffStores(
             recommendation: changeResult.recommendation,
           });
         }
+        // If changes.length === 0 and no error: policies differ in text but not semantically
+        // (formatting change). Treat as unchanged — no entry in policies_modified.
       }
     }
   }

@@ -28,6 +28,12 @@ export class StoreManager {
   loadFromRoots(roots: Array<{ uri: string; name?: string }>): void {
     this.stores.clear();
     for (const root of roots) {
+      if (!root.uri.startsWith("file://")) {
+        // Non-file:// URIs are not supported. Log and skip rather than silently
+        // accepting a URI that would produce wrong results at access time.
+        console.error(`[cedar-mcp-server] Skipping unsupported root URI scheme: ${root.uri} (only file:// is supported)`);
+        continue;
+      }
       const rawPath = root.uri.replace(/^file:\/\//, "").replace(/\/$/, "");
       const name = root.name ?? basename(rawPath) ?? "default";
       this.stores.set(name, { name, uri: root.uri, path: rawPath });
@@ -56,6 +62,10 @@ export class StoreManager {
 
   readPolicy(storeName: string, policyId: string): string {
     const store = this.requireStore(storeName);
+    // Prevent path traversal — policy IDs must be simple filenames with no slashes or dots
+    if (!/^[a-zA-Z0-9_-]+$/.test(policyId)) {
+      throw new Error(`Invalid policy ID: "${policyId}". Policy IDs must contain only letters, digits, hyphens, and underscores.`);
+    }
     const filePath = join(store.path, "policies", `${policyId}.cedar`);
     if (!existsSync(filePath)) {
       throw new Error(`Policy not found: "${policyId}" in store "${storeName}"`);
