@@ -10,6 +10,7 @@ import { handleCheckChange } from "./tools/check-change.js";
 import { handleGenerateSample } from "./tools/generate-sample.js";
 import { handleDiffStores } from "./tools/diff-stores.js";
 import { storeManager } from "./resources/store-manager.js";
+import { resolveRef } from "./resources/ref-resolver.js";
 
 export const SERVER_NAME = "cedar-mcp-server";
 export const SERVER_VERSION = "0.0.1";
@@ -22,18 +23,36 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_authorize",
-    "Evaluate a Cedar authorization request against policies and entities. Returns the decision (Allow/Deny) and which policies determined the outcome.",
+    "Evaluate a Cedar authorization request against policies and entities. Returns the decision (Allow/Deny) and which policies determined the outcome. Accepts inline policy text OR a cedar:// resource reference (policy_ref).",
     {
-      policies: z.string().describe("Cedar policy text (one or more policies)"),
+      policies: z.string().optional().describe("Cedar policy text (one or more policies). Omit if using policy_ref."),
+      policy_ref: z.string().optional().describe("cedar:// URI to load policies from a configured store, e.g. cedar://policies/blue"),
       principal: z.string().describe('Principal entity reference, e.g. Namespace::Type::"id"'),
       action: z.string().describe('Action entity reference, e.g. Namespace::Action::"name"'),
       resource: z.string().describe('Resource entity reference, e.g. Namespace::Type::"id"'),
       entities: z.string().describe("JSON array of entity objects with uid, attrs, and parents"),
       schema: z.string().optional().describe("Optional Cedar schema (JSON or .cedarschema format) — enables request validation"),
+      schema_ref: z.string().optional().describe("cedar:// URI to load schema from a configured store, e.g. cedar://schema/blue"),
       context: z.string().optional().describe("Optional JSON object with context attributes"),
     },
     async (input) => {
-      const result = await handleAuthorize(input);
+      // Resolve policy_ref / schema_ref — inline values take precedence
+      let policies = input.policies;
+      if (!policies && input.policy_ref) {
+        const resolved = resolveRef(input.policy_ref);
+        if ("error" in resolved) return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }] };
+        policies = resolved.content;
+      }
+      if (!policies) return { content: [{ type: "text", text: JSON.stringify({ error: "Either policies or policy_ref is required" }) }] };
+
+      let schema = input.schema;
+      if (!schema && input.schema_ref) {
+        const resolved = resolveRef(input.schema_ref);
+        if ("error" in resolved) return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }] };
+        schema = resolved.content;
+      }
+
+      const result = await handleAuthorize({ ...input, policies, schema });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
@@ -42,13 +61,31 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_validate",
-    "Validate Cedar policies against a Cedar schema. Returns validation errors with hints.",
+    "Validate Cedar policies against a Cedar schema. Returns validation errors with hints. Accepts inline text OR cedar:// resource references.",
     {
-      policies: z.string().describe("Cedar policy text (one or more policies)"),
-      schema: z.string().describe("Cedar schema — JSON object or Cedar schema text (.cedarschema format)"),
+      policies: z.string().optional().describe("Cedar policy text (one or more policies). Omit if using policy_ref."),
+      policy_ref: z.string().optional().describe("cedar:// URI to load policies, e.g. cedar://policies/blue"),
+      schema: z.string().optional().describe("Cedar schema — JSON object or .cedarschema text. Omit if using schema_ref."),
+      schema_ref: z.string().optional().describe("cedar:// URI to load schema, e.g. cedar://schema/blue"),
     },
     async (input) => {
-      const result = await handleValidate(input);
+      let policies = input.policies;
+      if (!policies && input.policy_ref) {
+        const resolved = resolveRef(input.policy_ref);
+        if ("error" in resolved) return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }] };
+        policies = resolved.content;
+      }
+      if (!policies) return { content: [{ type: "text", text: JSON.stringify({ error: "Either policies or policy_ref is required" }) }] };
+
+      let schema = input.schema;
+      if (!schema && input.schema_ref) {
+        const resolved = resolveRef(input.schema_ref);
+        if ("error" in resolved) return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }] };
+        schema = resolved.content;
+      }
+      if (!schema) return { content: [{ type: "text", text: JSON.stringify({ error: "Either schema or schema_ref is required" }) }] };
+
+      const result = await handleValidate({ policies, schema });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
