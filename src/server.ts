@@ -9,6 +9,7 @@ import { handleExplainMany } from "./tools/explain.js";
 import { handleCheckChange } from "./tools/check-change.js";
 import { handleGenerateSample } from "./tools/generate-sample.js";
 import { handleDiffStores } from "./tools/diff-stores.js";
+import { handleAdvise, type Sampler } from "./tools/advise.js";
 import { storeManager } from "./resources/store-manager.js";
 import { resolveRef } from "./resources/ref-resolver.js";
 
@@ -180,6 +181,32 @@ export function createServer(): McpServer {
     },
     async (input) => {
       const result = await handleDiffStores(input, storeManager);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    }
+  );
+
+  server.tool(
+    "cedar_advise",
+    "Get a step-by-step Cedar policy change plan for a natural-language intent. Uses MCP sampling (client AI) to translate intent into schema changes, policy modifications, Cedar snippets, AVP UpdatePolicy classifications, and gotcha warnings. Optionally reads the current policy store via a cedar:// store_ref. Pass previous_plan to get a delta instead of a full plan.",
+    {
+      intent: z.string().describe("Natural-language description of what you want the authorization model to do"),
+      store_ref: z.string().optional().describe("cedar:// URI or store name to read current schema and policies from, e.g. cedar://policies/production or just 'production'"),
+      previous_plan: z.unknown().optional().describe("Plan returned from a prior cedar_advise call — triggers delta output showing only what changed"),
+      format_preference: z.enum(["structured", "narrative"]).optional().describe("Output format preference (default: structured)"),
+    },
+    async (input) => {
+      const sampler: Sampler = async (userPrompt, systemPrompt) => {
+        const response = await server.server.createMessage({
+          messages: [{ role: "user", content: { type: "text", text: userPrompt } }],
+          maxTokens: 4096,
+          systemPrompt,
+        });
+        if (response.content.type === "text") return response.content.text;
+        return JSON.stringify({ error: "Unexpected non-text response from sampling" });
+      };
+      const result = await handleAdvise(input, sampler);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
