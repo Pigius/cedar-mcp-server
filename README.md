@@ -5,12 +5,13 @@
 [![npm version](https://img.shields.io/npm/v/cedar-mcp-server)](https://www.npmjs.com/package/cedar-mcp-server)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue)](https://www.typescriptlang.org/)
+[![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org/)
 
 ---
 
 ## What it does
 
-Sixteen tools across four categories:
+Seventeen tools across four categories, plus three MCP prompts:
 
 **Validation and evaluation** — work with Cedar policies without leaving the conversation.
 
@@ -18,6 +19,7 @@ Sixteen tools across four categories:
 |------|-------------|
 | [`cedar_validate`](#cedar_validate) | Validates Cedar policies against a schema; returns errors with hints and source locations |
 | [`cedar_authorize`](#cedar_authorize) | Evaluates an authorization request locally; returns the decision and which policies fired |
+| [`cedar_authorize_batch`](#cedar_authorize_batch) | Runs N authorization requests through one policy set and returns the decision matrix; for regression testing after a policy edit |
 | [`cedar_format`](#cedar_format) | Formats Cedar policy text to canonical style |
 | [`cedar_translate`](#cedar_translate) | Translates between Cedar text and Cedar JSON formats for policies and schemas |
 
@@ -256,6 +258,49 @@ Evaluates an authorization request locally against your policies and entities. R
 `determining_policies` lists the policy IDs that contributed to the decision. On a deny caused by a `forbid` policy, that policy's ID appears here. An empty list means default deny: no `permit` matched.
 
 **When to use:** verifying authorization logic after writing a policy, and checking that your entity payloads produce the expected decisions before deploying.
+
+---
+
+### `cedar_authorize_batch`
+
+Runs N authorization requests through ONE policy set and returns the decision matrix. Use case: regression testing after a policy edit (run a canonical request suite against the new policy set and confirm decisions haven't drifted).
+
+**Inputs:**
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `policies` | one of | Inline Cedar policy text |
+| `policy_ref` | one of | `cedar://` URI to load policies from a configured store |
+| `schema` | no | Cedar schema (JSON or `.cedarschema`); when supplied, schema-violating requests resolve to `decision: "Error"` rather than silent Allow/Deny |
+| `schema_ref` | no | `cedar://` URI to load schema |
+| `requests` | yes | JSON array of authorization request objects: `{principal, action, resource, entities, context?}` |
+| `entities` | no | Shared entities JSON applied when individual requests omit their own `entities` field |
+
+**Output shape:**
+
+```json
+{
+  "total": 200,
+  "allowed": 162,
+  "denied": 35,
+  "errored": 3,
+  "decisions": [
+    {
+      "index": 0,
+      "principal": "DocMgmt::User::\"alice\"",
+      "action": "DocMgmt::Action::\"READ\"",
+      "resource": "DocMgmt::Document::\"doc-1\"",
+      "decision": "Allow",
+      "determining_policies": ["policy0"]
+    }
+  ],
+  "summary": "200 requests: 162 Allow, 35 Deny, 3 Error"
+}
+```
+
+Per-request errors carry an `error` field describing what went wrong (malformed entities, schema violation, etc.) without aborting the rest of the batch.
+
+**When to use:** regression testing a canonical request suite after any policy edit. Pair with `cedar_diff_policy_stores`'s `behavioral_test_requests` when you also want a side-by-side comparison against the previous policy set.
 
 ---
 
@@ -854,6 +899,20 @@ Validates a Cedar entities JSON array against a schema, returning per-entity err
 
 ---
 
+## MCP Prompts
+
+In addition to tools, the server registers three MCP prompts that clients surface as slash commands or pre-canned message templates. Each prompt takes arguments, then returns an assembled message that drives the assistant through a structured Cedar workflow.
+
+| Prompt | Arguments | What it does |
+|--------|-----------|--------------|
+| `cedar-review-policy-diff` | `blue_store` (required), `green_store` (required), `focus` (optional) | Drives `cedar_diff_policy_stores` + `cedar_diff_schema`, summarizes structural changes plus risk-classified schema diff, and recommends whether to promote. |
+| `cedar-explain-denial` | `principal`, `action`, `resource`, `store` (all required) | Runs `cedar_authorize` against the store via `cedar://` refs, calls `cedar_explain` on the deciding policies, and produces a plain-English explanation of why the request was denied (or allowed) plus what would need to change. |
+| `cedar-avp-migration-checklist` | `namespace` (optional) | Returns a guided checklist for migrating an AVP policy store: schema validation, entity format detection, single-namespace constraint, template-linked policies, schema diff before `PutSchema`, behavioral diff before traffic shift. Informational only — no tool calls assumed. |
+
+In Claude Code these appear under the `/` slash menu when the server is configured. Other clients surface them differently per their UI conventions.
+
+---
+
 ## Setup with policy stores (MCP Roots)
 
 If your Cedar policies live on disk, configure MCP roots once and the server reads them directly. No more pasting policy text into every tool call.
@@ -909,6 +968,8 @@ cedar://templates/production             <- all templates in the production stor
 cedar://templates/production/viewer-access  <- the viewer-access template
 cedar://template-links/production        <- all template-link IDs in the store
 cedar://template-links/production/alice-docs  <- a specific link's metadata
+cedar://entities/production              <- merged entity JSON across all entities/*.json files
+cedar://entities/production/users-and-docs  <- a single entity file
 ```
 
 Both `policy_ref` and `schema_ref` accept these URIs in `cedar_validate` and `cedar_authorize`. Inline text still works — pass either form.
