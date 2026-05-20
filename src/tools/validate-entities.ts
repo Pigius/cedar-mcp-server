@@ -1,5 +1,5 @@
 import { checkParseEntities } from "@cedar-policy/cedar-wasm/nodejs";
-import type { Schema } from "@cedar-policy/cedar-wasm/nodejs";
+import type { Schema, Entities } from "@cedar-policy/cedar-wasm/nodejs";
 
 export interface ValidateEntitiesInput {
   entities: string;
@@ -44,7 +44,7 @@ const RE_UNKNOWN_TYPE = /entity `([^`]+)` has type `[^`]+` which is not declared
 const RE_UNKNOWN_ATTR = /attribute `([^`]+)` on `([^`]+)` should not exist according to the schema/;
 const RE_DISALLOWED_PARENT = /`([^`]+)` is not allowed to have an ancestor of type `[^`]+` according to the schema/;
 
-function classifyError(message: string): EntityError {
+export function classifyError(message: string): EntityError {
   let m: RegExpMatchArray | null;
 
   if ((m = message.match(RE_TYPE_MISMATCH))) {
@@ -68,7 +68,11 @@ function classifyError(message: string): EntityError {
     return { entity_uid: m[1], error_kind: "disallowed_parent_type", message };
   }
 
-  return { entity_uid: "", error_kind: "other", message };
+  return {
+    entity_uid: "",
+    error_kind: "other",
+    message: `[unrecognized error pattern; the regex classifier did not match this message, so error_kind defaulted to "other"] ${message}`,
+  };
 }
 
 export async function handleValidateEntities(
@@ -109,7 +113,7 @@ export async function handleValidateEntities(
   const entity_count = entities.length;
   const schema = parseSchema(input.schema);
 
-  const call = schema ? { entities: entities as never, schema } : { entities: entities as never };
+  const call = schema ? { entities: entities as Entities, schema } : { entities: entities as Entities };
   const answer = checkParseEntities(call);
 
   if (answer.type === "success") {

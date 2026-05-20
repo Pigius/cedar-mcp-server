@@ -131,6 +131,28 @@ describe("cedar_validate_entities", () => {
     expect(result.entity_count).toBe(ENTITIES.length);
   });
 
+  it("VE9: classifyError tags unknown patterns with a self-documenting prefix on the message", async () => {
+    const { classifyError } = await import("../../src/tools/validate-entities.js");
+    const synthetic = "some future Cedar 5.x error wording the current regex set does not recognize";
+
+    const result = classifyError(synthetic);
+
+    expect(result.error_kind).toBe("other");
+    expect(result.message).toContain("unrecognized error pattern");
+    expect(result.message).toContain(synthetic);
+  });
+
+  it("VE9b: classifyError still classifies a known pattern correctly (regression guard)", async () => {
+    const { classifyError } = await import("../../src/tools/validate-entities.js");
+    const known = `attribute \`bogus\` on \`DocMgmt::User::"alice"\` should not exist according to the schema`;
+
+    const result = classifyError(known);
+
+    expect(result.error_kind).toBe("unknown_attribute");
+    expect(result.attribute).toBe("bogus");
+    expect(result.message).not.toContain("unrecognized error pattern");
+  });
+
   it("VEF: falsification — entity with three violations surfaces all three", async () => {
     // wrong type, missing required, unknown attr — all in one entity.
     // WASM may return them as a single error or multiple — test that the
