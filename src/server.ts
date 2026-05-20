@@ -3,6 +3,7 @@ import { z } from "zod";
 import { handleAuthorize } from "./tools/authorize.js";
 import { handleValidate } from "./tools/validate.js";
 import { handleFormat } from "./tools/format.js";
+import { handleTranslate } from "./tools/translate.js";
 
 export const SERVER_NAME = "cedar-mcp-server";
 export const SERVER_VERSION = "0.0.1";
@@ -58,6 +59,22 @@ export function createServer(): McpServer {
     },
     async (input) => {
       const result = await handleFormat(input);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    }
+  );
+
+  server.tool(
+    "cedar_translate",
+    "Translate between Cedar human-readable format and JSON format for policies or schemas.",
+    {
+      input: z.string().describe("Cedar text or JSON to translate"),
+      type: z.enum(["policy", "schema"]).describe("Whether the input is a policy or schema"),
+      direction: z.enum(["to_json", "to_cedar"]).describe("Translation direction"),
+    },
+    async (input) => {
+      const result = await handleTranslate(input);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
