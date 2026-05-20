@@ -160,6 +160,14 @@ function describeExpr(expr: Expr): string {
     return `NOT(${describeExpr(node.arg)})`;
   }
 
+  // like: { "like": { left: Expr, pattern: PatternElem[] } }
+  // Reconstruct pattern with * for wildcards so it reads as Cedar syntax
+  if ("like" in expr) {
+    const node = (expr as Record<string, unknown>)["like"] as { left: Expr; pattern: PatternElem[] };
+    const patternStr = patternToString(node.pattern, "*");
+    return `${describeExpr(node.left)} like "${patternStr}"`;
+  }
+
   // contains() call appears as an ExtFuncCall: { "contains": [left, right] }
   // ExtFuncCall is {} & Record<string, Expr[]> — operator is the key, value is args array
   const keys = Object.keys(expr);

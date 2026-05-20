@@ -62,6 +62,27 @@ describe("cedar_explain", () => {
     expect(result.summary).toMatch(/PERMITS/i);
   });
 
+  it("7.3b — path-matching policy: like conditions render as Cedar syntax not 'complex condition'", async () => {
+    const result = await handleExplain({
+      policy: `permit (
+        principal in DocMgmt::Role::"readonly",
+        action in [DocMgmt::Action::"GET"],
+        resource
+      )
+      when {
+        resource.path like "/api/v1/policies/*"
+        && !(resource.path like "/api/v1/policies/*/*")
+      };`,
+    });
+
+    expect(result.effect).toBe("permit");
+    expect(result.conditions.length).toBeGreaterThan(0);
+    // Must render the like pattern, not fall back to "complex condition"
+    expect(result.conditions[0]!.text).toContain("like");
+    expect(result.conditions[0]!.text).toContain("/api/v1/policies/");
+    expect(result.conditions[0]!.text).not.toBe("WHEN complex condition");
+  });
+
   it("7.4 — template policy with ?principal and ?resource slots", async () => {
     const result = await handleExplain({
       policy: `permit(
