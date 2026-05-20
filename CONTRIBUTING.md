@@ -42,8 +42,8 @@ Each tool lives in `src/tools/<name>.ts` with a corresponding test in `test/tool
 ## Running tests
 
 ```bash
-npm test                          # all unit tests
-npx vitest run test/integration   # integration smoke tests (spawns the server)
+npm test                          # unit tests (fast, excludes integration)
+npm run test:integration          # integration smoke tests (spawns the server via stdio)
 ```
 
 Unit tests are fast and self-contained. Integration tests spawn the server as a child process and require a built or runnable server; they run separately from the unit suite.

@@ -560,7 +560,7 @@ cedar://policies/production/admin     <- the admin.cedar policy
 cedar://schema/production             <- the production schema
 ```
 
-Both `policy_ref` and `schema_ref` accept these URIs in `cedar_validate`, `cedar_authorize`, and `cedar_explain`. Inline text still works — pass either form.
+Both `policy_ref` and `schema_ref` accept these URIs in `cedar_validate` and `cedar_authorize`. Inline text still works — pass either form.
 
 ### Error when no stores are configured
 
