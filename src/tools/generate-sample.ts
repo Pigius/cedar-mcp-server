@@ -97,9 +97,36 @@ function walkExpr(
     return;
   }
 
-  // contains(): { "contains": [array_expr, value_expr] } — but policyToJson may encode differently
-  // Cedar's [X, Y].contains(attr) appears as an ext func call with key "contains" or similar
-  // For now, handle simple in-condition; skip complex ones
+  // in (set membership in condition body): { "in": { left: attrExpr, right: SetExpr } }
+  // e.g. resource.status in ["active", "pending"]
+  if ("in" in e && clauseKind === "when") {
+    const node = e["in"] as { left: unknown; right: unknown };
+    const attr = extractAttrAccess(node.left);
+    const right = node.right as Record<string, unknown>;
+    if (attr && "Set" in right) {
+      const values = (right["Set"] as unknown[]).map(extractValue).filter((v) => v !== undefined);
+      if (values.length > 0) {
+        constraints.push({ variable: attr.variable, attr: attr.attr, op: "contains", values });
+      }
+    }
+    return;
+  }
+
+  // contains(): { "contains": { "left": setExpr, "right": attrExpr } }
+  // e.g. ["active", "pending"].contains(resource.status)
+  if ("contains" in e && !Array.isArray(e["contains"]) && typeof e["contains"] === "object") {
+    const node = e["contains"] as { left: unknown; right: unknown };
+    const setExpr = node.left as Record<string, unknown>;
+    const attrExpr = node.right;
+    if ("Set" in setExpr && clauseKind === "when") {
+      const attr = extractAttrAccess(attrExpr);
+      const values = (setExpr["Set"] as unknown[]).map(extractValue).filter((v) => v !== undefined);
+      if (attr && values.length > 0) {
+        constraints.push({ variable: attr.variable, attr: attr.attr, op: "contains", values });
+      }
+    }
+    return;
+  }
 }
 
 function extractAttrAccess(
@@ -148,10 +175,28 @@ interface ScopeInfo {
   resourceType: string;
 }
 
-function extractScope(json: PolicyJson, schemaNamespace: string): ScopeInfo {
-  // Infer entity types from the policy scope and schema namespace
-  const principalType = `${schemaNamespace}::User`;
-  const resourceType = `${schemaNamespace}::Resource`;
+function entityTypesFromSchema(
+  schemaJson: unknown,
+  namespace: string,
+  actionId: string | undefined
+): { principalType: string; resourceType: string } {
+  try {
+    const ns = (schemaJson as Record<string, unknown>)?.[namespace] as Record<string, unknown>;
+    const actions = ns?.["actions"] as Record<string, unknown>;
+    const actionKey = actionId ? actions?.[actionId] : Object.values(actions ?? {})[0];
+    const appliesTo = (actionKey as Record<string, unknown>)?.["appliesTo"] as Record<string, unknown>;
+    const principalTypes = appliesTo?.["principalTypes"] as string[] | undefined;
+    const resourceTypes = appliesTo?.["resourceTypes"] as string[] | undefined;
+    return {
+      principalType: principalTypes?.[0] ? `${namespace}::${principalTypes[0]}` : `${namespace}::User`,
+      resourceType: resourceTypes?.[0] ? `${namespace}::${resourceTypes[0]}` : `${namespace}::Resource`,
+    };
+  } catch {
+    return { principalType: `${namespace}::User`, resourceType: `${namespace}::Resource` };
+  }
+}
+
+function extractScope(json: PolicyJson, schemaNamespace: string, schemaJson?: unknown): ScopeInfo {
   const actionType = `${schemaNamespace}::Action`;
 
   let actionId: string | undefined;
@@ -180,6 +225,8 @@ function extractScope(json: PolicyJson, schemaNamespace: string): ScopeInfo {
     }
   }
 
+  const { principalType, resourceType } = entityTypesFromSchema(schemaJson, schemaNamespace, actionId);
+
   return {
     principalType,
     principalRoleType,
@@ -206,13 +253,14 @@ function buildEntities(
   const principalAttrs: Record<string, unknown> = {};
   const resourceAttrs: Record<string, unknown> = {};
 
-  // For deny, prefer violating a "has" constraint (omit optional attr) over corrupting an eq value.
-  // Omitting an attribute is the clearest deny signal for optional attribute guards.
+  // For deny, prefer violating a "has" constraint first, then "contains"/"eq".
+  // Omitting an optional attribute is the clearest deny signal.
   let violatedConstraint: AttributeConstraint | null = null;
   if (targetDecision === "deny") {
     violatedConstraint =
       constraints.find((c) => c.op === "has" && c.variable === "resource") ??
       constraints.find((c) => c.op === "has" && c.variable === "principal") ??
+      constraints.find((c) => c.op === "contains") ??
       constraints.find((c) => c.op === "eq") ??
       null;
   }
@@ -223,6 +271,8 @@ function buildEntities(
     if (c.variable === "principal") {
       if (c.op === "eq" && shouldSatisfy) principalAttrs[c.attr] = c.value;
       if (c.op === "eq" && !shouldSatisfy) principalAttrs[c.attr] = `__deny_${c.attr}`;
+      if (c.op === "contains" && shouldSatisfy) principalAttrs[c.attr] = c.values?.[0];
+      if (c.op === "contains" && !shouldSatisfy) principalAttrs[c.attr] = `__deny_not_in_set`;
     }
 
     if (c.variable === "resource") {
@@ -234,6 +284,9 @@ function buildEntities(
 
       if (c.op === "eq" && shouldSatisfy && !attrOmittedByDeny) resourceAttrs[c.attr] = c.value;
       if (c.op === "eq" && !shouldSatisfy) resourceAttrs[c.attr] = `__deny_${c.attr}`;
+      // contains/in: pick first value from set for allow, sentinel not in set for deny
+      if (c.op === "contains" && shouldSatisfy) resourceAttrs[c.attr] = c.values?.[0];
+      if (c.op === "contains" && !shouldSatisfy) resourceAttrs[c.attr] = `__deny_not_in_set`;
       if (c.op === "has" && shouldSatisfy) {
         // Include the optional attr — set to a neutral value if no eq constraint follows
         const eqForAttr = constraints.find(
@@ -318,20 +371,21 @@ export async function handleGenerateSample(input: GenerateSampleInput): Promise<
   }
   const json = policyResult.json;
 
-  // Extract namespace from schema.
+  // Extract namespace and schema JSON for entity type lookup.
   // schemaToJsonWithResolvedTypes only accepts Cedar text — for JSON schemas, parse directly.
   let schemaNamespace = "MyApp";
+  let schemaJson: unknown = undefined;
   try {
     const parsed = JSON.parse(input.schema);
     const ns = Object.keys(parsed)[0];
-    if (ns) schemaNamespace = ns;
+    if (ns) { schemaNamespace = ns; schemaJson = parsed; }
   } catch {
     // Not JSON — try Cedar text schema
     try {
       const schemaResult = schemaToJsonWithResolvedTypes(input.schema);
       if (schemaResult.type === "success") {
         const ns = Object.keys(schemaResult.json)[0];
-        if (ns) schemaNamespace = ns;
+        if (ns) { schemaNamespace = ns; schemaJson = schemaResult.json; }
       }
     } catch {
       // Non-fatal — proceed with default namespace
@@ -342,7 +396,7 @@ export async function handleGenerateSample(input: GenerateSampleInput): Promise<
   const constraints: AttributeConstraint[] = extractConstraints(json.conditions);
   const likeConstraints: LikeConstraint[] = extractLikeConstraints(json.conditions);
 
-  const scope = extractScope(json, schemaNamespace);
+  const scope = extractScope(json, schemaNamespace, schemaJson);
 
   // Build entities, passing like constraints for path-matching generation
   const { entities, principalId, actionId, resourceId } = buildEntities(

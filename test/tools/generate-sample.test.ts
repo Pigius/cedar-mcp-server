@@ -25,6 +25,7 @@ const ABAC_SCHEMA = JSON.stringify({
             type: { type: "String", required: true },
             region: { type: "String", required: true },
             tag: { type: "String", required: false },
+            status: { type: "String", required: false },
           },
         },
       },
@@ -139,6 +140,49 @@ describe("cedar_generate_sample_request", () => {
     const resource = result.entities.find((e: { uid: { type: string } }) => e.uid.type?.includes("Resource"));
     // The resource should NOT have category (omitting the optional attr is the deny strategy)
     expect(resource?.attrs?.tag).toBeUndefined();
+  });
+
+  // Fix 4: entity types read from schema instead of hardcoded User/Resource
+  it("uses schema entity types (Endpoint not Resource) when defined in appliesTo", async () => {
+    const result = await handleGenerateSample({
+      policy: `permit(principal in Gateway::Role::"readonly", action in [Gateway::Action::"GET"], resource);`,
+      schema: GATEWAY_SCHEMA,
+      target_decision: "allow",
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.decision).toBe("Allow");
+    // Principal should be Gateway::User (from appliesTo.principalTypes), not Gateway::User (same here)
+    // Resource should be Gateway::Endpoint (from appliesTo.resourceTypes), not Gateway::Resource
+    expect(result.resource).toContain("Gateway::Endpoint");
+    expect(result.principal).toContain("Gateway::User");
+  });
+
+  // Fix 5: in/contains conditions extracted and satisfied
+  it("extracts contains() conditions and satisfies them for allow", async () => {
+    const result = await handleGenerateSample({
+      policy: `permit(principal, action in [MyApp::Action::"READ"], resource) when { ["active", "pending"].contains(resource.status) };`,
+      schema: ABAC_SCHEMA,
+      target_decision: "allow",
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.decision).toBe("Allow");
+    const resource = result.entities.find((e: { uid: { type: string } }) => e.uid.type?.includes("Resource"));
+    expect(["active", "pending"]).toContain(resource?.attrs?.status);
+  });
+
+  it("extracts contains() conditions and violates them for deny", async () => {
+    const result = await handleGenerateSample({
+      policy: `permit(principal, action in [MyApp::Action::"READ"], resource) when { ["active", "pending"].contains(resource.status) };`,
+      schema: ABAC_SCHEMA,
+      target_decision: "deny",
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.decision).toBe("Deny");
+    const resource = result.entities.find((e: { uid: { type: string } }) => e.uid.type?.includes("Resource"));
+    expect(["active", "pending"]).not.toContain(resource?.attrs?.status);
   });
 
   // Path-matching cases (require like operator support)
