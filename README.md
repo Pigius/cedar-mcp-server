@@ -63,6 +63,38 @@ First run pulls the package via `npx`. Subsequent runs use the npm cache.
 
 ---
 
+## Coming from AWS Verified Permissions?
+
+If you're already using AVP, your entity JSON looks different from Cedar's open-source format. `cedar_authorize` detects and converts all three AVP SDK formats automatically.
+
+| What you have | What's auto-detected |
+|---|---|
+| Ruby SDK (`entity_type`, `entity_id`) | snake_case AVP format |
+| Python / JS SDK v3 (`entityType`, `entityId`) | camelCase AVP format |
+| AWS console / official API (`EntityType`, `EntityId`) | PascalCase AVP format |
+
+Typed attribute wrappers (`{ "string": "val" }`, `{ "long": 42 }`, `{ "boolean": true }`) are unwrapped to raw Cedar values. Entity references in attributes (`entityIdentifier`) are converted to Cedar's `__entity` format. `Set` and `Record` wrappers are unwrapped recursively.
+
+The response includes `format_detected` and `format_note` telling you what was detected:
+
+```json
+{
+  "decision": "Allow",
+  "format_detected": "avp",
+  "format_note": "Entities are in AVP format. Automatically converted to Cedar format."
+}
+```
+
+**Three things to know when migrating from AVP:**
+
+1. **Action groups are not automatic.** AVP appends action group entities to the entity list for you. With this tool, include them manually in the `entities` array.
+
+2. **The `entities` SDK envelope is handled.** If you pass the full SDK value (`{ entity_list: [...] }` or `{ entityList: [...] }`), it is automatically unwrapped.
+
+3. **One namespace only.** AVP policy stores support a single namespace. This tool works with multi-namespace Cedar schemas, but your AVP-derived policies will only reference one.
+
+---
+
 ## Tools
 
 ### `cedar_validate`
