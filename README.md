@@ -948,6 +948,30 @@ The response includes `format_detected` and `format_note` telling you what was d
 
 3. One namespace only. AVP policy stores support a single namespace. This tool works with multi-namespace Cedar schemas, but your AVP-derived policies will only reference one.
 
+### Schema and entity workflows
+
+These tools are useful when you are working directly with AVP schema and entity data.
+
+**`cedar_validate_schema`**: Validates a Cedar schema JSON for structural correctness before you call AVP `PutSchema`. Run this as a pre-flight check: if the schema is malformed, `cedar_validate_schema` tells you the exact error before AVP rejects it.
+
+**`cedar_diff_schema`**: Computes a structural diff between two schemas and classifies each change as `safe`, `review`, or `breaking`. A `risk: breaking` change means existing policies will fail validation against the new schema. Use this when comparing schemas across two AVP policy stores, or when planning a `PutSchema` deployment and you want to know what you are changing and at what risk level before committing.
+
+**`cedar_validate_entities`**: Validates an entity-store JSON against a schema. When you retrieve entities from AVP via `BatchGetPolicyStoreEntities` (or build them manually), run this before passing them to `cedar_authorize`. It catches type mismatches and missing required attributes early, so authorization failures have a clear cause.
+
+### Template-linked policies
+
+AVP uses template-linked policies heavily. A template has `?principal` and `?resource` slots; each link binds those slots to specific entity references to produce a concrete policy. The template body is immutable once created; only the slot bindings change per link.
+
+**`cedar_validate_template`**: Validates a Cedar policy template against a schema. Detects `?principal` and `?resource` slot presence and reports schema errors. Run this before uploading a new template to AVP via `CreatePolicyTemplate`.
+
+**`cedar_link_template`**: Instantiates a template by binding `?principal` and `?resource` to specific entity references. The output is a Cedar-format policy string. You can then pass that to `cedar_check_policy_change` to diff it against an existing policy, or use it as the body for an AVP `CreatePolicy` (static) call.
+
+**`cedar_list_templates`**: Lists templates from the configured policy store (`templates/*.cedar` subdirectory). Useful when auditing which templates exist in a store before deploying changes.
+
+**`cedar_list_template_links`**: Lists template links from the configured policy store (`template-links/*.json` subdirectory). Each link record shows which entity refs are bound to a given template. Use this to audit coverage: which principals and resources have active template-linked policies.
+
+When updating a template-linked policy in AVP, the binding (slot values) can change via `UpdatePolicy`, but the template body can only change via `UpdatePolicyTemplate`, which invalidates all links. Use `cedar_check_policy_change` to verify the impact of a template body change before calling `UpdatePolicyTemplate`.
+
 ---
 
 ## Coming from cedar-cli or cedar-policy-cli?
