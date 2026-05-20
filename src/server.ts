@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { handleAuthorize } from "./tools/authorize.js";
+import { handleValidate } from "./tools/validate.js";
 
 export const SERVER_NAME = "cedar-mcp-server";
 export const SERVER_VERSION = "0.0.1";
@@ -25,6 +26,21 @@ export function createServer(): McpServer {
     },
     async (input) => {
       const result = await handleAuthorize(input);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    }
+  );
+
+  server.tool(
+    "cedar_validate",
+    "Validate Cedar policies against a Cedar schema. Returns validation errors with hints.",
+    {
+      policies: z.string().describe("Cedar policy text (one or more policies)"),
+      schema: z.string().describe("Cedar schema — JSON object or Cedar schema text (.cedarschema format)"),
+    },
+    async (input) => {
+      const result = await handleValidate(input);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
