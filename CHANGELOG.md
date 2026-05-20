@@ -36,6 +36,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). This pr
 - `StoreManager` extended with `listEntities`, `readEntities`, and `readAllEntities` methods (entity files live in `entities/*.json` under the store root).
 - New MCP Resources: `cedar://entities/{store}` (merged JSON across entity files) and `cedar://entities/{store}/{file_id}` (single file).
 - `ref-resolver.ts` now also resolves `cedar://templates/{store}`, `cedar://templates/{store}/{id}`, `cedar://template-links/{store}`, and `cedar://template-links/{store}/{id}` — previously the corresponding MCP Resources were registered but the URIs were not resolvable as `*_ref` parameters in tools.
+- `cedar_authorize` and `cedar_authorize_batch` gained an `entities_ref` parameter; either inline `entities` or `entities_ref` is now accepted.
+
+#### HTTP transport (Batch F)
+- New Streamable HTTP transport for shared team deployment. CLI: `cedar-mcp-server --http <port> [--host <host>] [--root name=path]...`. Stdio remains the default.
+- Per-session McpServer + transport pair with stateful `Mcp-Session-Id` routing (Streamable HTTP spec requires per-session protocol state).
+- Shared `storeManager` across HTTP sessions — deployment model is "one server per policy-store set." Deployer-configured roots via repeatable `--root` flags; client `listRoots()` is not called in HTTP mode.
+- Security: localhost default-binding with DNS rebinding protection via the SDK's `createMcpExpressApp`. Non-localhost binding is the deployer's responsibility (auth via reverse proxy).
+- New `/health` endpoint returns `{ status, transport, mode, active_sessions }`.
+- New deps: `express`, `@types/express`.
+- 5 new integration smoke tests (H1-H5) covering listTools/cedar_validate/cedar_authorize over real HTTP transport, the /health endpoint, and a falsification case (malformed JSON body returns a structured error, not a crash).
 
 ### Changed
 - `cedar_diff_policy_stores`: `schema_diff` field is now a structured `SchemaDiff` object (with per-change risk classification) replacing the previous `schema_changed: boolean` + `schema_diff_note: string` fields.

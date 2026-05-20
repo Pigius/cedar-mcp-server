@@ -913,6 +913,62 @@ In Claude Code these appear under the `/` slash menu when the server is configur
 
 ---
 
+## Running as a shared HTTP server
+
+The default `npx cedar-mcp-server` mode is stdio, designed for Claude Code / Claude Desktop / Cursor on a single developer machine. For a shared team deployment (one server, many clients), use Streamable HTTP mode.
+
+### Start the server
+
+```bash
+# Local-only (recommended default; binds to 127.0.0.1 with DNS rebinding protection)
+cedar-mcp-server --http 3000 --root production=/etc/cedar/production --root staging=/etc/cedar/staging
+
+# Non-localhost binding (you handle auth via reverse proxy)
+cedar-mcp-server --http 3000 --host 0.0.0.0 --root prod=/etc/cedar/prod
+```
+
+CLI flags:
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--http <port>` | yes (HTTP mode) | Listen port (1-65535) |
+| `--host <host>` | no | Bind host (default `127.0.0.1`) |
+| `--root <name>=<path>` | repeatable | Deployer-configured policy store; clients see these as MCP Roots |
+| `--help` | no | Print usage |
+
+### Endpoints
+
+- `POST /mcp` — the MCP Streamable HTTP endpoint. Each session gets a unique `Mcp-Session-Id` returned on the initialize response and required on subsequent requests.
+- `GET /health` — returns `{ status, transport, mode, active_sessions }` JSON. Useful for liveness probes.
+
+### Client configuration
+
+Point any Streamable-HTTP-capable MCP client at `http://<host>:<port>/mcp`. Example (Claude Code or similar) using the SDK's `StreamableHTTPClientTransport`:
+
+```ts
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+
+const client = new Client({ name: "team", version: "1.0.0" }, { capabilities: {} });
+const transport = new StreamableHTTPClientTransport(new URL("http://cedar-mcp.internal:3000/mcp"));
+await client.connect(transport);
+```
+
+### Sharing model and limitations
+
+The HTTP server runs **one shared `storeManager`** across all concurrent sessions. The deployment model is "one server per policy-store set; many team clients all see the same roots." Every client connected to the same HTTP server reads the same `--root` mappings. For per-tenant isolation (different teams seeing different policy stores), deploy multiple processes behind a routing layer.
+
+Each MCP session DOES get its own `McpServer` instance — protocol state (initialized, message history, sampling) is per-session as the MCP spec requires.
+
+### Security
+
+- Default localhost binding plus the SDK's built-in DNS rebinding protection covers the local team-dev case.
+- Non-localhost binding (`--host 0.0.0.0` or a public IP) is on you to secure. Recommended pattern: terminate TLS at a reverse proxy (nginx, Caddy, Cloudflare), add bearer-token or mTLS auth at that layer, forward the `POST /mcp` and `GET /health` paths to the server.
+- v1 ships without built-in auth or CORS. Both are deferred until real demand surfaces.
+- See `SECURITY.md` for the trust boundary and input validation guarantees.
+
+---
+
 ## Setup with policy stores (MCP Roots)
 
 If your Cedar policies live on disk, configure MCP roots once and the server reads them directly. No more pasting policy text into every tool call.
