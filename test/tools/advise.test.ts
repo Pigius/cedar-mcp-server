@@ -304,4 +304,67 @@ describe("cedar_advise", () => {
     expect(result.required_changes![0]!.avp_update_mode).toBe("new_policy_via_create_policy");
     expect(result.gotchas!.some(g => g.id === "forbid_overrides_permit")).toBe(true);
   });
+
+  // ─── Audit-gap fixes ──────────────────────────────────────────────────────────
+
+  it("A13 — store context includes actual policy text so LLM can produce cedar_snippet_before", async () => {
+    const storePath = makeStore(tmpDir, "withtext", { admin: ADMIN_POLICY, editor: EDITOR_POLICY });
+    manager.loadFromRoots([{ uri: `file://${storePath}`, name: "withtext" }]);
+
+    let capturedUser = "";
+    const sampler: Sampler = async (up) => { capturedUser = up; return JSON.stringify(PLAN_ABAC_ON_RBAC); };
+
+    await handleAdvise({ intent: "Add constraint", store_ref: "withtext" }, sampler, manager);
+
+    // The actual Cedar policy text must appear in the prompt so the LLM can reference it
+    expect(capturedUser).toContain('Role::"admin"');
+    expect(capturedUser).toContain('Role::"editor"');
+  });
+
+  it("A14 — LLM policy_new with wrong avp_update_mode is corrected to new_policy_via_create_policy", async () => {
+    const badPlan = {
+      ...PLAN_FORBID_SENSITIVE,
+      required_changes: [
+        {
+          ...PLAN_FORBID_SENSITIVE.required_changes[0],
+          type: "policy_new",
+          avp_update_mode: "in_place_via_update_policy",  // wrong
+        },
+      ],
+    };
+    const result = await handleAdvise({ intent: "block access" }, mockSampler(badPlan));
+
+    expect(result.required_changes![0]!.avp_update_mode).toBe("new_policy_via_create_policy");
+  });
+
+  it("A15 — LLM policy_delete with wrong avp_update_mode is corrected to requires_delete_recreate", async () => {
+    const badPlan = {
+      ...PLAN_ABAC_ON_RBAC,
+      required_changes: [
+        {
+          step: 1,
+          type: "policy_delete",
+          description: "Remove old editor policy",
+          avp_update_mode: "in_place_via_update_policy",  // wrong
+        },
+      ],
+    };
+    const result = await handleAdvise({ intent: "migrate to rebac" }, mockSampler(badPlan));
+
+    expect(result.required_changes![0]!.avp_update_mode).toBe("requires_delete_recreate");
+  });
+
+  it("A16 — schema step ordering: adds warning when policy step precedes schema step", async () => {
+    const misordered = {
+      ...PLAN_ABAC_ON_RBAC,
+      required_changes: [
+        { step: 1, type: "policy_modify", description: "Modify policy first", avp_update_mode: "in_place_via_update_policy" },
+        { step: 2, type: "schema", description: "Add attribute second (wrong order)" },
+      ],
+    };
+    const result = await handleAdvise({ intent: "add attribute" }, mockSampler(misordered));
+
+    // Should have a gotcha warning about ordering
+    expect(result.gotchas!.some(g => g.id === "schema_first_then_policy")).toBe(true);
+  });
 });

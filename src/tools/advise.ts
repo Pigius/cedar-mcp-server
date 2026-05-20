@@ -176,21 +176,61 @@ function parseAdviseResponse(raw: string): AdviseResult {
     json = codeBlockMatch[1]!.trim();
   }
 
+  let result: AdviseResult;
   try {
-    return JSON.parse(json) as AdviseResult;
+    result = JSON.parse(json) as AdviseResult;
   } catch {
-    // Try to find a JSON object anywhere in the response
     const objectMatch = json.match(/\{[\s\S]*\}/);
     if (objectMatch) {
       try {
-        return JSON.parse(objectMatch[0]) as AdviseResult;
+        result = JSON.parse(objectMatch[0]) as AdviseResult;
       } catch {
-        // fall through
+        return { error: "Failed to parse LLM response as JSON", raw_response: raw };
       }
+    } else {
+      return { error: "Failed to parse LLM response as JSON", raw_response: raw };
     }
-    return {
-      error: "Failed to parse LLM response as JSON",
-      raw_response: raw,
-    };
   }
+
+  return postProcess(result);
+}
+
+/** Correct deterministic errors in LLM output that are mechanically verifiable. */
+function postProcess(result: AdviseResult): AdviseResult {
+  const changes = result.required_changes;
+  if (!changes) return result;
+
+  // Fix: policy_new must always be new_policy_via_create_policy
+  //      policy_delete must always be requires_delete_recreate
+  const corrected = changes.map(c => {
+    if (c.type === "policy_new") {
+      return { ...c, avp_update_mode: "new_policy_via_create_policy" };
+    }
+    if (c.type === "policy_delete") {
+      return { ...c, avp_update_mode: "requires_delete_recreate" };
+    }
+    return c;
+  });
+
+  // Detect schema ordering violation: any schema step has a higher step number
+  // than any policy step that could reference it
+  const schemaSteps = corrected.filter(c => c.type === "schema").map(c => c.step);
+  const policySteps = corrected.filter(c => c.type !== "schema").map(c => c.step);
+  const hasOrderingBug = schemaSteps.some(sStep =>
+    policySteps.some(pStep => pStep < sStep)
+  );
+
+  let gotchas = result.gotchas ?? [];
+  if (hasOrderingBug && !gotchas.some(g => g.id === "schema_first_then_policy")) {
+    gotchas = [
+      ...gotchas,
+      {
+        id: "schema_first_then_policy",
+        severity: "medium",
+        description: "A schema change step appears after a policy step in the plan. Schema changes must be deployed BEFORE policies that reference new attributes. Reorder steps so all schema changes precede policy changes that depend on them.",
+      },
+    ];
+  }
+
+  return { ...result, required_changes: corrected, gotchas };
 }

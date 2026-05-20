@@ -12,6 +12,7 @@ export interface PolicyInventoryEntry {
   pattern: string;
   pattern_confidence: string;
   summary: string;
+  policy_text: string;
 }
 
 export interface StoreContext {
@@ -28,8 +29,6 @@ export interface StoreContext {
 export function buildStoreContext(storeName: string, manager: StoreManager = storeManager): StoreContext | null {
   try {
     const schema = manager.readSchema(storeName);
-    const allPoliciesText = manager.readAllPolicies(storeName);
-
     const inventory: PolicyInventoryEntry[] = [];
     const policyIds = manager.listPolicies(storeName);
 
@@ -44,6 +43,7 @@ export function buildStoreContext(storeName: string, manager: StoreManager = sto
             pattern: classification.pattern,
             pattern_confidence: classification.confidence,
             summary: buildPolicySummary(id, parseResult.json.effect, classification.evidence),
+            policy_text: content.trim(),
           });
         } else {
           inventory.push({
@@ -51,6 +51,7 @@ export function buildStoreContext(storeName: string, manager: StoreManager = sto
             pattern: "unknown",
             pattern_confidence: "low",
             summary: `${id}: parse failed — ${parseResult.errors[0]?.message ?? "unknown error"}`,
+            policy_text: content.trim(),
           });
         }
       } catch {
@@ -59,6 +60,7 @@ export function buildStoreContext(storeName: string, manager: StoreManager = sto
           pattern: "unknown",
           pattern_confidence: "low",
           summary: `${id}: could not analyze`,
+          policy_text: content.trim(),
         });
       }
     }
@@ -100,6 +102,7 @@ export function formatContextForPrompt(ctx: StoreContext): string {
 
   for (const p of ctx.policy_inventory) {
     lines.push(`  - ${p.policy_id}: pattern=${p.pattern} (${p.pattern_confidence} confidence) — ${p.summary}`);
+    lines.push(`    text: ${p.policy_text}`);
   }
 
   return lines.join("\n");
