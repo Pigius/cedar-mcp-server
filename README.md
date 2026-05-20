@@ -12,8 +12,8 @@ Connect this server and your AI assistant can work with Cedar policies without l
 
 ```
 You:  Is this policy valid against my schema?
-AI:   [calls cedar_validate] → "Line 3: attribute `insurer` not found on entity
-      type `Policy`. Available attributes: vertical, business_unit."
+AI:   [calls cedar_validate] → "Line 3: attribute `owner` not found on entity
+      type `Document`. Available attributes: classification, title."
 
 You:  Would alice be allowed to read this document?
 AI:   [calls cedar_authorize] → Decision: Allow. Determined by policy0.
@@ -284,11 +284,11 @@ action.name in ["read", "write"]          // wrong Cedar doesn't support this fo
 
 **Optional attribute access needs a guard:**
 ```cedar
-// Safe checks existence before accessing
-resource has insurer && resource.insurer == "Acme"
+// Safe: checks existence before accessing
+resource has tag && resource.tag == "confidential"
 
-// Unsafe if `insurer` is optional, this silently makes the policy inapplicable
-resource.insurer == "Acme"
+// Unsafe: if `tag` is optional, this silently makes the policy inapplicable
+resource.tag == "confidential"
 ```
 
 **`forbid` overrides `permit`:**

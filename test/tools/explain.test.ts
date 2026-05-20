@@ -1,8 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { handleExplain } from "../../src/tools/explain.js";
 
-// Dataset 7 test cases — NDA-scrubbed.
-// 7.3: "insurer" replaced with "category" (generic optional attribute pattern)
+// Dataset 7 test cases — generic attribute names only.
 
 describe("cedar_explain", () => {
   it("7.1 — simple RBAC: permit, role membership, unrestricted action and resource", async () => {
@@ -42,19 +41,20 @@ describe("cedar_explain", () => {
     expect(result.patterns_detected).toContain("role_exemption");
   });
 
-  it("7.3 — ABAC with optional attribute guard (scrubbed: category instead of insurer)", async () => {
+  it("7.3 — ABAC with optional attribute guard", async () => {
     const result = await handleExplain({
-      policy: `permit (principal, action in [InsurePlatform::Action::"READ"], resource)
+      policy: `permit (principal, action in [DocMgmt::Action::"read"], resource)
         when {
           principal.name == "service_x" &&
-          resource has category &&
-          resource.category == "premium"
+          resource has tag &&
+          resource.tag == "confidential"
         };`,
     });
 
+
     expect(result.effect).toBe("permit");
     expect(result.principal.description).toContain("any principal");
-    expect(result.action.description).toContain("READ");
+    expect(result.action.description).toContain("read");
     expect(result.conditions.length).toBeGreaterThan(0);
     expect(result.conditions[0]!.text).toContain("AND");
     expect(result.patterns_detected).toContain("optional_attribute_guard");

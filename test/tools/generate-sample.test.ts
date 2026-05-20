@@ -2,17 +2,13 @@ import { describe, it, expect } from "vitest";
 import { handleGenerateSample } from "../../src/tools/generate-sample.js";
 import { SCHEMA_JSON } from "../fixtures/docmgmt.js";
 
-// Dataset 5 test cases — NDA-scrubbed.
-// 5.2-5.5 originally used InsurePlatform schema with client-specific names.
-// Here we use a generic schema with DocMgmt-style entities.
-
 const DOCMGMT_SCHEMA_STR = JSON.stringify(SCHEMA_JSON);
 
-// A simple ABAC schema for cases 5.2-5.5
+// Generic ABAC schema for cases 5.2-5.5
 const ABAC_SCHEMA = JSON.stringify({
   MyApp: {
     entityTypes: {
-      Identity: {
+      User: {
         memberOfTypes: [],
         shape: {
           type: "Record",
@@ -26,17 +22,17 @@ const ABAC_SCHEMA = JSON.stringify({
         shape: {
           type: "Record",
           attributes: {
-            vertical: { type: "String", required: true },
-            tenant: { type: "String", required: true },
-            category: { type: "String", required: false },
+            type: { type: "String", required: true },
+            region: { type: "String", required: true },
+            tag: { type: "String", required: false },
           },
         },
       },
     },
     actions: {
-      READ: {
+      read: {
         appliesTo: {
-          principalTypes: ["Identity"],
+          principalTypes: ["User"],
           resourceTypes: ["Resource"],
           context: { type: "Record", attributes: {} },
         },
@@ -63,12 +59,12 @@ describe("cedar_generate_sample_request", () => {
     const result = await handleGenerateSample({
       policy: `permit(
         principal,
-        action in [MyApp::Action::"READ"],
+        action in [MyApp::Action::"read"],
         resource
       ) when {
         principal.name == "service_x" &&
-        resource.vertical == "tradesmen" &&
-        resource.tenant == "tenant_us"
+        resource.type == "report" &&
+        resource.region == "us-east"
       };`,
       schema: ABAC_SCHEMA,
       target_decision: "allow",
@@ -86,12 +82,12 @@ describe("cedar_generate_sample_request", () => {
     const result = await handleGenerateSample({
       policy: `permit(
         principal,
-        action in [MyApp::Action::"READ"],
+        action in [MyApp::Action::"read"],
         resource
       ) when {
         principal.name == "service_x" &&
-        resource.vertical == "tradesmen" &&
-        resource.tenant == "tenant_us"
+        resource.type == "report" &&
+        resource.region == "us-east"
       };`,
       schema: ABAC_SCHEMA,
       target_decision: "deny",
@@ -106,12 +102,12 @@ describe("cedar_generate_sample_request", () => {
     const result = await handleGenerateSample({
       policy: `permit(
         principal,
-        action in [MyApp::Action::"READ"],
+        action in [MyApp::Action::"read"],
         resource
       ) when {
         principal.name == "service_x" &&
-        resource has category &&
-        resource.category == "premium"
+        resource has tag &&
+        resource.tag == "confidential"
       };`,
       schema: ABAC_SCHEMA,
       target_decision: "allow",
@@ -120,19 +116,19 @@ describe("cedar_generate_sample_request", () => {
     expect(result.error).toBeUndefined();
     expect(result.decision).toBe("Allow");
     const resource = result.entities.find((e: { uid: { type: string } }) => e.uid.type?.includes("Resource"));
-    expect(resource?.attrs?.category).toBe("premium");
+    expect(resource?.attrs?.tag).toBe("confidential");
   });
 
   it("5.5 — optional attribute guard: deny request omits the guarded attribute", async () => {
     const result = await handleGenerateSample({
       policy: `permit(
         principal,
-        action in [MyApp::Action::"READ"],
+        action in [MyApp::Action::"read"],
         resource
       ) when {
         principal.name == "service_x" &&
-        resource has category &&
-        resource.category == "premium"
+        resource has tag &&
+        resource.tag == "confidential"
       };`,
       schema: ABAC_SCHEMA,
       target_decision: "deny",
@@ -142,6 +138,6 @@ describe("cedar_generate_sample_request", () => {
     expect(result.decision).toBe("Deny");
     const resource = result.entities.find((e: { uid: { type: string } }) => e.uid.type?.includes("Resource"));
     // The resource should NOT have category (omitting the optional attr is the deny strategy)
-    expect(resource?.attrs?.category).toBeUndefined();
+    expect(resource?.attrs?.tag).toBeUndefined();
   });
 });
