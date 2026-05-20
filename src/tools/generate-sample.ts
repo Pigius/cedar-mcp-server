@@ -175,6 +175,44 @@ interface ScopeInfo {
   resourceType: string;
 }
 
+/**
+ * Returns required attributes for an entity type from the (resolved) schema JSON.
+ * Only includes `required: true` attributes — optional ones are omitted unless
+ * the policy conditions explicitly reference them.
+ * Returns a map of attrName → default value based on Cedar type.
+ */
+function requiredAttrsFromSchema(
+  schemaJson: unknown,
+  namespace: string,
+  entityTypeName: string
+): Record<string, unknown> {
+  try {
+    const ns = (schemaJson as Record<string, unknown>)?.[namespace] as Record<string, unknown>;
+    const entityTypes = ns?.["entityTypes"] as Record<string, unknown>;
+    // entityTypeName may be fully-qualified "Ns::Type" or just "Type"
+    const simpleTypeName = entityTypeName.includes("::")
+      ? entityTypeName.split("::").pop()!
+      : entityTypeName;
+    const entityDef = entityTypes?.[simpleTypeName] as Record<string, unknown>;
+    const shape = entityDef?.["shape"] as Record<string, unknown>;
+    const attributes = shape?.["attributes"] as Record<string, Record<string, unknown>>;
+    if (!attributes) return {};
+
+    const defaults: Record<string, unknown> = {};
+    for (const [attrName, attrDef] of Object.entries(attributes)) {
+      if (attrDef["required"] !== true) continue;
+      const typeName = (attrDef["type"] as string | undefined)?.toLowerCase() ?? "";
+      if (typeName === "string") defaults[attrName] = "";
+      else if (typeName === "long") defaults[attrName] = 0;
+      else if (typeName === "boolean") defaults[attrName] = false;
+      // Records, Sets, extension types: leave to the caller to set meaningfully
+    }
+    return defaults;
+  } catch {
+    return {};
+  }
+}
+
 function entityTypesFromSchema(
   schemaJson: unknown,
   namespace: string,
@@ -244,14 +282,21 @@ function buildEntities(
   constraints: AttributeConstraint[],
   targetDecision: "allow" | "deny",
   schemaNamespace: string,
-  likeConstraints: LikeConstraint[] = []
+  likeConstraints: LikeConstraint[] = [],
+  schemaJson?: unknown
 ): { entities: EntityPayload[]; principalId: string; actionId: string; resourceId: string } {
   const principalId = "sample-principal";
   const resourceId = "sample-resource";
   const actionId = scope.actionId ?? "READ";
 
-  const principalAttrs: Record<string, unknown> = {};
-  const resourceAttrs: Record<string, unknown> = {};
+  // Seed required attributes from schema so validateRequest: true doesn't fail on missing fields.
+  // Condition-derived values (eq, has, contains, like) overwrite these defaults below.
+  const principalAttrs: Record<string, unknown> = schemaJson
+    ? requiredAttrsFromSchema(schemaJson, schemaNamespace, scope.principalType)
+    : {};
+  const resourceAttrs: Record<string, unknown> = schemaJson
+    ? requiredAttrsFromSchema(schemaJson, schemaNamespace, scope.resourceType)
+    : {};
 
   // For deny, prefer violating a "has" constraint first, then "contains"/"eq".
   // Omitting an optional attribute is the clearest deny signal.
@@ -405,7 +450,7 @@ export async function handleGenerateSample(input: GenerateSampleInput): Promise<
 
   // Build entities, passing like constraints for path-matching generation
   const { entities, principalId, actionId, resourceId } = buildEntities(
-    scope, constraints, input.target_decision, schemaNamespace, likeConstraints
+    scope, constraints, input.target_decision, schemaNamespace, likeConstraints, schemaJson
   );
 
   const principalRef = `${scope.principalType}::"${principalId}"`;

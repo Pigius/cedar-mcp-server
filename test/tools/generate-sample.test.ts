@@ -142,6 +142,35 @@ describe("cedar_generate_sample_request", () => {
     expect(resource?.attrs?.tag).toBeUndefined();
   });
 
+  // Fix 2: required schema attributes are populated on generated entities
+  it("populates required schema attributes even when not mentioned in policy conditions", async () => {
+    // The DocMgmt schema requires name+email on User and owner+classification on Document
+    // The policy only checks role membership — no condition references these attrs
+    // Without the fix, generated entities miss required attrs and validateRequest: true fails
+    const result = await handleGenerateSample({
+      policy: `permit(principal in DocMgmt::Role::"admin", action, resource);`,
+      schema: DOCMGMT_SCHEMA_STR,
+      target_decision: "allow",
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.decision).toBe("Allow");
+
+    const principal = result.entities.find((e: { uid: { type: string } }) =>
+      e.uid.type?.includes("User")
+    );
+    const resource = result.entities.find((e: { uid: { type: string } }) =>
+      e.uid.type?.includes("Document")
+    );
+
+    // Required attrs from schema: User has name (String) and email (String)
+    expect(principal?.attrs).toHaveProperty("name");
+    expect(principal?.attrs).toHaveProperty("email");
+    // Required attrs from schema: Document has owner (String) and classification (String)
+    expect(resource?.attrs).toHaveProperty("owner");
+    expect(resource?.attrs).toHaveProperty("classification");
+  });
+
   // Fix 4: entity types read from schema instead of hardcoded User/Resource
   it("uses schema entity types (Endpoint not Resource) when defined in appliesTo", async () => {
     const result = await handleGenerateSample({
