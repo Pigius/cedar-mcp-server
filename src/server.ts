@@ -5,6 +5,7 @@ import { handleValidate } from "./tools/validate.js";
 import { handleFormat } from "./tools/format.js";
 import { handleTranslate } from "./tools/translate.js";
 import { handleExplain } from "./tools/explain.js";
+import { handleCheckChange } from "./tools/check-change.js";
 
 export const SERVER_NAME = "cedar-mcp-server";
 export const SERVER_VERSION = "0.0.1";
@@ -91,6 +92,21 @@ export function createServer(): McpServer {
     },
     async (input) => {
       const result = await handleExplain(input);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    }
+  );
+
+  server.tool(
+    "cedar_check_policy_change",
+    "Check whether a Cedar policy change can be applied in-place in AWS Verified Permissions, or requires deleting and recreating the policy. Based on Cedar/AVP immutability rules.",
+    {
+      old_policy: z.string().describe("Original Cedar policy text"),
+      new_policy: z.string().describe("Modified Cedar policy text"),
+    },
+    async (input) => {
+      const result = await handleCheckChange(input);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
