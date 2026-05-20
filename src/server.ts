@@ -40,7 +40,8 @@ export function createServer(): McpServer {
       principal: z.string().describe('Principal entity reference, e.g. Namespace::Type::"id"'),
       action: z.string().describe('Action entity reference, e.g. Namespace::Action::"name"'),
       resource: z.string().describe('Resource entity reference, e.g. Namespace::Type::"id"'),
-      entities: z.string().describe("JSON array of entity objects with uid, attrs, and parents"),
+      entities: z.string().optional().describe("JSON array of entity objects with uid, attrs, and parents. Omit if using entities_ref."),
+      entities_ref: z.string().optional().describe("cedar:// URI to load entities from a configured store, e.g. cedar://entities/production"),
       schema: z.string().optional().describe("Optional Cedar schema (JSON or .cedarschema format) — enables request validation"),
       schema_ref: z.string().optional().describe("cedar:// URI to load schema from a configured store, e.g. cedar://schema/blue"),
       context: z.string().optional().describe("Optional JSON object with context attributes"),
@@ -62,7 +63,15 @@ export function createServer(): McpServer {
         schema = resolved.content;
       }
 
-      const result = await handleAuthorize({ ...input, policies, schema });
+      let entities = input.entities;
+      if (!entities && input.entities_ref) {
+        const resolved = resolveRef(input.entities_ref);
+        if ("error" in resolved) return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }] };
+        entities = resolved.content;
+      }
+      if (!entities) return { content: [{ type: "text", text: JSON.stringify({ error: "Either entities or entities_ref is required" }) }] };
+
+      const result = await handleAuthorize({ ...input, policies, schema, entities });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
@@ -78,10 +87,17 @@ export function createServer(): McpServer {
       schema: z.string().optional().describe("Optional Cedar schema (JSON or .cedarschema). When supplied, schema-violating requests resolve to decision: Error rather than silent evaluation."),
       schema_ref: z.string().optional().describe("cedar:// URI to load schema, e.g. cedar://schema/blue"),
       requests: z.string().describe("JSON array of authorization request objects: {principal, action, resource, entities, context?}"),
-      entities: z.string().optional().describe("Shared entities JSON applied when individual requests omit their own entities field"),
+      entities: z.string().optional().describe("Shared entities JSON applied when individual requests omit their own entities field. Omit if using entities_ref."),
+      entities_ref: z.string().optional().describe("cedar:// URI to load shared entities from a configured store, e.g. cedar://entities/production"),
     },
     async (input) => {
-      const result = await handleAuthorizeBatch(input);
+      let entities = input.entities;
+      if (!entities && input.entities_ref) {
+        const resolved = resolveRef(input.entities_ref);
+        if ("error" in resolved) return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }] };
+        entities = resolved.content;
+      }
+      const result = await handleAuthorizeBatch({ ...input, entities });
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
   );
