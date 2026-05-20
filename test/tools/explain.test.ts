@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { handleExplain } from "../../src/tools/explain.js";
+import { handleExplain, handleExplainMany } from "../../src/tools/explain.js";
 
 // Dataset 7 test cases — generic attribute names only.
 
@@ -98,5 +98,70 @@ describe("cedar_explain", () => {
     expect(result.patterns_detected).toContain("template_policy");
     expect(result.patterns_detected).toContain("slot_resource");
     expect(result.summary).toMatch(/TEMPLATE/i);
+  });
+});
+
+describe("cedar_explain — multi-policy (handleExplainMany)", () => {
+  const POLICY_SET = `
+permit (
+  principal in DocMgmt::Role::"admin",
+  action,
+  resource
+);
+
+permit (
+  principal in DocMgmt::Role::"editor",
+  action in [DocMgmt::Action::"READ", DocMgmt::Action::"WRITE"],
+  resource
+);
+
+forbid (
+  principal,
+  action,
+  resource
+)
+when {
+  resource.classification == "top_secret"
+}
+unless {
+  principal in DocMgmt::Role::"admin"
+};
+`.trim();
+
+  it("returns ExplainManyResult with policy_count for a policy set", async () => {
+    const result = await handleExplainMany({ policy: POLICY_SET });
+    expect("policy_count" in result).toBe(true);
+    if ("policy_count" in result) {
+      expect(result.policy_count).toBe(3);
+      expect(result.policies).toHaveLength(3);
+    }
+  });
+
+  it("each policy in the set has its own summary and effect", async () => {
+    const result = await handleExplainMany({ policy: POLICY_SET });
+    if ("policy_count" in result) {
+      expect(result.policies[0]!.effect).toBe("permit");
+      expect(result.policies[2]!.effect).toBe("forbid");
+      expect(result.policies[0]!.summary).toMatch(/PERMITS/i);
+      expect(result.policies[2]!.summary).toMatch(/FORBIDS/i);
+    }
+  });
+
+  it("falls back to single ExplainResult for a single policy", async () => {
+    const result = await handleExplainMany({
+      policy: `permit(principal in DocMgmt::Role::"admin", action, resource);`,
+    });
+    // Single policy returns ExplainResult directly (no policy_count wrapping)
+    expect("effect" in result).toBe(true);
+    expect("policy_count" in result).toBe(false);
+  });
+
+  it("each policy has an index", async () => {
+    const result = await handleExplainMany({ policy: POLICY_SET });
+    if ("policy_count" in result) {
+      expect(result.policies[0]!.index).toBe(0);
+      expect(result.policies[1]!.index).toBe(1);
+      expect(result.policies[2]!.index).toBe(2);
+    }
   });
 });

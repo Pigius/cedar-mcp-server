@@ -4,7 +4,7 @@ import { handleAuthorize } from "./tools/authorize.js";
 import { handleValidate } from "./tools/validate.js";
 import { handleFormat } from "./tools/format.js";
 import { handleTranslate } from "./tools/translate.js";
-import { handleExplain } from "./tools/explain.js";
+import { handleExplainMany } from "./tools/explain.js";
 import { handleCheckChange } from "./tools/check-change.js";
 import { handleGenerateSample } from "./tools/generate-sample.js";
 
@@ -86,13 +86,13 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_explain",
-    "Explain a Cedar policy in structured, human-readable form. Returns effect, scope breakdown, conditions, detected patterns, and a plain-English summary.",
+    "Explain one or more Cedar policies in structured, human-readable form. Accepts a single policy, a template, or a full policy set. Returns effect, scope breakdown, conditions, detected patterns, and a plain-English summary per policy.",
     {
-      policy: z.string().describe("Cedar policy text (single policy or template)"),
+      policy: z.string().describe("Cedar policy text (single policy, template, or policy set with multiple policies)"),
       schema: z.string().optional().describe("Optional Cedar schema for richer context"),
     },
     async (input) => {
-      const result = await handleExplain(input);
+      const result = await handleExplainMany(input);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };

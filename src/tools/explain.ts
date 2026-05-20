@@ -1,4 +1,4 @@
-import { policyToJson, templateToJson } from "@cedar-policy/cedar-wasm/nodejs";
+import { policyToJson, templateToJson, policySetTextToParts } from "@cedar-policy/cedar-wasm/nodejs";
 import {
   describePrincipal,
   describeAction,
@@ -159,5 +159,39 @@ export async function handleExplain(input: ExplainInput): Promise<ExplainResult>
     conditions,
     summary,
     patterns_detected: patterns,
+  };
+}
+
+// ─── Multi-policy entry point ──────────────────────────────────────────────────
+
+export interface ExplainManyResult {
+  policy_count: number;
+  policies: Array<ExplainResult & { index: number }>;
+}
+
+/**
+ * Explains a Cedar policy set (one or more policies).
+ * Uses policySetTextToParts to split, then explains each individually.
+ * Falls back to single-policy handling when there is exactly one policy.
+ */
+export async function handleExplainMany(input: ExplainInput): Promise<ExplainManyResult | ExplainResult> {
+  const parts = policySetTextToParts(input.policy);
+
+  // Single policy or unparseable — fall through to single-policy handler
+  if (parts.type === "failure" || (parts.policies.length + parts.policy_templates.length) <= 1) {
+    return handleExplain(input);
+  }
+
+  const allPolicies = [...parts.policies, ...parts.policy_templates];
+  const results = await Promise.all(
+    allPolicies.map(async (policyText, i) => {
+      const result = await handleExplain({ policy: policyText, schema: input.schema });
+      return { ...result, index: i };
+    })
+  );
+
+  return {
+    policy_count: allPolicies.length,
+    policies: results,
   };
 }
