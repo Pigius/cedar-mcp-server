@@ -24,6 +24,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). This pr
 - `cedar_diff_schema`: structural schema diff with AVP-aware risk classification; each change is classified as `safe`, `review`, or `breaking` with a reason; accepts inline schema text or `cedar://schema/{store}` URIs.
 - `cedar_validate_entities`: validates an entity store against a schema; classifies errors by kind (`unknown_type`, `missing_required_attribute`, `type_mismatch`, `unknown_attribute`, `disallowed_parent_type`, `parse_error`, `other`).
 
+#### Batch authorization (Batch C)
+- `cedar_authorize_batch`: runs N authorization requests through one policy set and returns the decision matrix (total/allowed/denied/errored counts plus per-request decision array with `determining_policies` from WASM `diagnostics.reason`). Schema-violating requests resolve to `decision: "Error"` when `schema + validateRequest` is in play; without schema, the same request is silently evaluated.
+
+#### MCP Prompts (Batch D)
+- `cedar-review-policy-diff`: drives `cedar_diff_policy_stores` + `cedar_diff_schema`, summarizes risk, advises on promotion.
+- `cedar-explain-denial`: runs `cedar_authorize` via `cedar://` refs + `cedar_explain` on deciding policies; produces plain-English explanation.
+- `cedar-avp-migration-checklist`: guided checklist for AVP migration; optional `namespace` arg substitutes `<YourNamespace>` placeholder when omitted.
+
+#### Entities resource access (Batch E)
+- `StoreManager` extended with `listEntities`, `readEntities`, and `readAllEntities` methods (entity files live in `entities/*.json` under the store root).
+- New MCP Resources: `cedar://entities/{store}` (merged JSON across entity files) and `cedar://entities/{store}/{file_id}` (single file).
+- `ref-resolver.ts` now also resolves `cedar://templates/{store}`, `cedar://templates/{store}/{id}`, `cedar://template-links/{store}`, and `cedar://template-links/{store}/{id}` — previously the corresponding MCP Resources were registered but the URIs were not resolvable as `*_ref` parameters in tools.
+
 ### Changed
 - `cedar_diff_policy_stores`: `schema_diff` field is now a structured `SchemaDiff` object (with per-change risk classification) replacing the previous `schema_changed: boolean` + `schema_diff_note: string` fields.
 
