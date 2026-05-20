@@ -1,4 +1,5 @@
 import { schemaToText, schemaToJsonWithResolvedTypes } from "@cedar-policy/cedar-wasm/nodejs";
+import type { Schema } from "@cedar-policy/cedar-wasm/nodejs";
 
 export interface DiffSchemaInput {
   blue: string;
@@ -114,7 +115,7 @@ function normalizeToCanonical(schemaStr: string): CanonicalSchema {
   }
 
   if (parsedJson !== null && typeof parsedJson === "object" && !Array.isArray(parsedJson)) {
-    const textAns = schemaToText(parsedJson as never);
+    const textAns = schemaToText(parsedJson as Schema);
     if (textAns.type !== "success") {
       throw new Error("Failed to convert JSON schema to text form: " + (textAns.errors?.[0]?.message ?? "unknown error"));
     }
@@ -205,8 +206,8 @@ function diffAttributes(
         change: bReq ? "required_to_optional" : "optional_to_required",
         risk: bReq ? "safe" : "breaking",
         reason: bReq
-          ? "Required → optional: all existing entities still satisfy the constraint."
-          : "Optional → required: existing entities without the field will fail validation.",
+          ? "Attribute changed from required to optional; all existing entities still satisfy the constraint."
+          : "Attribute changed from optional to required; existing entities without this field will fail validation.",
       });
     }
   }
@@ -379,7 +380,7 @@ function diffCommonTypes(
           namespace: ns,
           name,
           risk: "review",
-          reason: "Common type removed: if referenced by any entity/action, policies will fail validation. Audit usages.",
+          reason: "Common type removed: any entity or action referencing it will cause policies to fail validation.",
         });
       } else if (JSON.stringify(bCt[name]) !== JSON.stringify(gCt[name])) {
         diff.common_types.modified.push({
