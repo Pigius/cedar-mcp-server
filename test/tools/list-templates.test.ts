@@ -133,4 +133,19 @@ describe("cedar_list_template_links", () => {
 
     expect(result.error).toBeDefined();
   });
+
+  it("LSTL4 — malformed link JSON surfaces as structured error not unhandled throw", async () => {
+    const { manager, storePath } = makeStore(tmpDir, {
+      links: { "good-link": { template_id: "t", slot_values: {} } },
+    });
+    // Overwrite with malformed JSON after store is loaded
+    writeFileSync(join(storePath, "template-links", "bad-link.json"), "{{{not json");
+
+    // Reload to pick up the new file
+    manager.loadFromRoots([{ uri: `file://${storePath}`, name: "mystore" }]);
+    const result = await handleListTemplateLinks({ store: "mystore" }, manager);
+
+    expect(result.error).toBeDefined();
+    expect(result.error).toMatch(/bad-link/);
+  });
 });

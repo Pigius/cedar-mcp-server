@@ -29,8 +29,12 @@ export async function handleListTemplateLinks(
 
   const links: TemplateLinkEntry[] = [];
   for (const id of ids) {
-    const data = manager.readTemplateLink(input.store, id);
-    links.push({ id, template_id: data.template_id, slot_values: data.slot_values });
+    try {
+      const data = manager.readTemplateLink(input.store, id);
+      links.push({ id, template_id: data.template_id, slot_values: data.slot_values });
+    } catch (e) {
+      return { store: input.store, links, error: `Failed to read link "${id}": ${e instanceof Error ? e.message : String(e)}` };
+    }
   }
 
   return { store: input.store, links };

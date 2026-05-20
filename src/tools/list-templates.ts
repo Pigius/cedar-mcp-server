@@ -40,7 +40,12 @@ export async function handleListTemplates(
 
   const templates: TemplateEntry[] = [];
   for (const id of ids) {
-    const content = manager.readTemplate(input.store, id);
+    let content: string;
+    try {
+      content = manager.readTemplate(input.store, id);
+    } catch (e) {
+      return { store: input.store, templates, error: `Failed to read template "${id}": ${e instanceof Error ? e.message : String(e)}` };
+    }
     const parsed = templateToJson(content);
     const slots = parsed.type === "success" ? detectSlots(parsed.json as PolicyJson) : [];
     templates.push({ id, content, slots });
