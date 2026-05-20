@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { handleAuthorize } from "./tools/authorize.js";
 import { handleValidate } from "./tools/validate.js";
+import { handleFormat } from "./tools/format.js";
 
 export const SERVER_NAME = "cedar-mcp-server";
 export const SERVER_VERSION = "0.0.1";
@@ -41,6 +42,22 @@ export function createServer(): McpServer {
     },
     async (input) => {
       const result = await handleValidate(input);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    }
+  );
+
+  server.tool(
+    "cedar_format",
+    "Format Cedar policies to canonical style.",
+    {
+      policies: z.string().describe("Cedar policy text to format"),
+      line_width: z.number().optional().describe("Maximum line width (default: 80)"),
+      indent_width: z.number().optional().describe("Indent width in spaces (default: 2)"),
+    },
+    async (input) => {
+      const result = await handleFormat(input);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
