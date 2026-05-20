@@ -91,7 +91,7 @@ export class StoreManager {
 
   // ─── Private ────────────────────────────────────────────────────────────────
 
-  private requireStore(name: string): PolicyStore {
+  requireStore(name: string): PolicyStore {
     const store = this.stores.get(name);
     if (!store) throw new Error(`Store not found: "${name}". Available stores: ${[...this.stores.keys()].join(", ") || "none"}`);
     return store;

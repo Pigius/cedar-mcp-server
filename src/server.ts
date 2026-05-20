@@ -1,4 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { handleAuthorize } from "./tools/authorize.js";
 import { handleValidate } from "./tools/validate.js";
@@ -7,6 +8,8 @@ import { handleTranslate } from "./tools/translate.js";
 import { handleExplainMany } from "./tools/explain.js";
 import { handleCheckChange } from "./tools/check-change.js";
 import { handleGenerateSample } from "./tools/generate-sample.js";
+import { handleDiffStores } from "./tools/diff-stores.js";
+import { storeManager } from "./resources/store-manager.js";
 
 export const SERVER_NAME = "cedar-mcp-server";
 export const SERVER_VERSION = "0.0.1";
@@ -127,6 +130,106 @@ export function createServer(): McpServer {
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
+    }
+  );
+
+  server.tool(
+    "cedar_diff_policy_stores",
+    "Semantic diff of two Cedar policy stores (blue vs green). Returns added, removed, and modified policies with AVP immutability classification per change, schema changes, and optional behavioral diff showing which authorization decisions would change.",
+    {
+      blue: z.string().describe("Name of the blue (current/production) store — must be a configured MCP root"),
+      green: z.string().describe("Name of the green (proposed/staging) store — must be a configured MCP root"),
+      behavioral_test_requests: z.string().optional().describe("JSON array of authorization requests to run through both stores to detect decision drift"),
+    },
+    async (input) => {
+      const result = await handleDiffStores(input, storeManager);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    }
+  );
+
+  // ─── MCP Resources: cedar:// URI scheme ────────────────────────────────────
+
+  // List all policy IDs in a store: cedar://policies/{store}
+  server.resource(
+    "cedar-policies-list",
+    new ResourceTemplate("cedar://policies/{store}", { list: undefined }),
+    async (_uri, variables) => {
+      const storeName = variables["store"] as string;
+      try {
+        const policyIds = storeManager.listPolicies(storeName);
+        return {
+          contents: [{
+            uri: `cedar://policies/${storeName}`,
+            mimeType: "application/json",
+            text: JSON.stringify(policyIds),
+          }],
+        };
+      } catch (e) {
+        return {
+          contents: [{
+            uri: `cedar://policies/${storeName}`,
+            mimeType: "application/json",
+            text: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }),
+          }],
+        };
+      }
+    }
+  );
+
+  // Read a single policy: cedar://policies/{store}/{policy_id}
+  server.resource(
+    "cedar-policy",
+    new ResourceTemplate("cedar://policies/{store}/{policy_id}", { list: undefined }),
+    async (uri, variables) => {
+      const storeName = variables["store"] as string;
+      const policyId = variables["policy_id"] as string;
+      try {
+        const content = storeManager.readPolicy(storeName, policyId);
+        return {
+          contents: [{
+            uri: uri.toString(),
+            mimeType: "text/plain",
+            text: content,
+          }],
+        };
+      } catch (e) {
+        return {
+          contents: [{
+            uri: uri.toString(),
+            mimeType: "application/json",
+            text: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }),
+          }],
+        };
+      }
+    }
+  );
+
+  // Read schema for a store: cedar://schema/{store}
+  server.resource(
+    "cedar-schema",
+    new ResourceTemplate("cedar://schema/{store}", { list: undefined }),
+    async (uri, variables) => {
+      const storeName = variables["store"] as string;
+      try {
+        const content = storeManager.readSchema(storeName);
+        return {
+          contents: [{
+            uri: uri.toString(),
+            mimeType: "text/plain",
+            text: content,
+          }],
+        };
+      } catch (e) {
+        return {
+          contents: [{
+            uri: uri.toString(),
+            mimeType: "application/json",
+            text: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }),
+          }],
+        };
+      }
     }
   );
 
