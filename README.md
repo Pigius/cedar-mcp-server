@@ -446,6 +446,7 @@ Translates a natural-language description of an authorization intent into a step
 | `intent` | yes | Natural-language description of the desired authorization behavior |
 | `store_ref` | no | Store name or `cedar://` URI; provides the server with current schema and policy context |
 | `previous_plan` | no | A previous `cedar_advise` result; triggers delta output (unchanged/modified/added/removed steps) |
+| `format_preference` | no | `"structured"` (default) or `"narrative"`; hints the LLM at the desired output style |
 
 **Output shape (full plan):**
 
