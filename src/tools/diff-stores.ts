@@ -1,6 +1,7 @@
 import { isAuthorized } from "@cedar-policy/cedar-wasm/nodejs";
 import type { StoreManager } from "../resources/store-manager.js";
 import { handleCheckChange } from "./check-change.js";
+import { handleDiffSchema, type SchemaDiff } from "./diff-schema.js";
 import { normalizePrincipalRef } from "../utils/format-detector.js";
 import type { Entities } from "@cedar-policy/cedar-wasm/nodejs";
 
@@ -33,8 +34,7 @@ export interface DiffStoresResult {
   policies_added: Array<{ policy_id: string; content: string }>;
   policies_removed: Array<{ policy_id: string; content: string }>;
   policies_modified: PolicyChangeInfo[];
-  schema_changed: boolean;
-  schema_diff_note?: string;
+  schema_diff: SchemaDiff;
   behavioral_diff?: BehavioralDriftEntry[];
   summary: string;
   error?: string;
@@ -115,18 +115,14 @@ export async function handleDiffStores(
     }
   }
 
-  // Schema diff
-  let schema_changed = false;
-  let schema_diff_note: string | undefined;
+  // Schema diff — structured via handleDiffSchema
+  let schema_diff: SchemaDiff;
   try {
-    const blueSchema = manager.readSchema(input.blue).trim();
-    const greenSchema = manager.readSchema(input.green).trim();
-    schema_changed = blueSchema !== greenSchema;
-    if (schema_changed) {
-      schema_diff_note = "Schema content differs between blue and green stores. Review schema changes carefully — attribute additions may be safe, type changes or removals can break existing policies.";
-    }
+    const blueSchema = manager.readSchema(input.blue);
+    const greenSchema = manager.readSchema(input.green);
+    schema_diff = await handleDiffSchema({ blue: blueSchema, green: greenSchema });
   } catch (e) {
-    schema_diff_note = `Schema comparison failed: ${e instanceof Error ? e.message : String(e)}`;
+    schema_diff = emptySchemaDiff(`Schema comparison failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   // Behavioral diff (optional)
@@ -145,6 +141,8 @@ export async function handleDiffStores(
     policies_added.length + policies_removed.length + policies_modified.length;
   const requiresRecreate = policies_modified.filter((p) => !p.can_update_in_place).length;
   const driftCount = behavioral_diff?.filter((d) => d.drifted).length ?? 0;
+  const schema_changed = hasSchemaChanges(schema_diff);
+  const schemaBreaking = schema_diff.risk_level === "breaking";
 
   let summary: string;
   if (totalChanges === 0 && !schema_changed) {
@@ -157,7 +155,9 @@ export async function handleDiffStores(
       parts.push(`${policies_modified.length} modified`);
       if (requiresRecreate) parts.push(`(${requiresRecreate} require delete-recreate in AVP)`);
     }
-    if (schema_changed) parts.push("schema changed");
+    if (schema_changed) {
+      parts.push(schemaBreaking ? "schema changed (BREAKING)" : "schema changed");
+    }
     if (driftCount) parts.push(`${driftCount} authorization decision(s) would change`);
     summary = `Policy diff: ${parts.join(", ")}.`;
   }
@@ -168,10 +168,38 @@ export async function handleDiffStores(
     policies_added,
     policies_removed,
     policies_modified,
-    schema_changed,
-    ...(schema_diff_note ? { schema_diff_note } : {}),
+    schema_diff,
     ...(behavioral_diff !== undefined ? { behavioral_diff } : {}),
     summary,
+  };
+}
+
+function hasSchemaChanges(d: SchemaDiff): boolean {
+  return (
+    d.namespaces_added.length > 0 ||
+    d.namespaces_removed.length > 0 ||
+    d.entity_types.added.length > 0 ||
+    d.entity_types.removed.length > 0 ||
+    d.entity_types.modified.length > 0 ||
+    d.actions.added.length > 0 ||
+    d.actions.removed.length > 0 ||
+    d.actions.modified.length > 0 ||
+    d.common_types.added.length > 0 ||
+    d.common_types.removed.length > 0 ||
+    d.common_types.modified.length > 0
+  );
+}
+
+function emptySchemaDiff(error?: string): SchemaDiff {
+  return {
+    namespaces_added: [],
+    namespaces_removed: [],
+    entity_types: { added: [], removed: [], modified: [] },
+    actions: { added: [], removed: [], modified: [] },
+    common_types: { added: [], removed: [], modified: [] },
+    summary: "",
+    risk_level: "safe",
+    ...(error ? { error } : {}),
   };
 }
 
@@ -262,7 +290,7 @@ function errorResult(blue: string, green: string, error: string): DiffStoresResu
     policies_added: [],
     policies_removed: [],
     policies_modified: [],
-    schema_changed: false,
+    schema_diff: emptySchemaDiff(),
     summary: "",
     error,
   };

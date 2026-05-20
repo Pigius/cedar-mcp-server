@@ -68,7 +68,8 @@ describe("cedar_diff_policy_stores", () => {
     expect(result.policies_added).toHaveLength(0);
     expect(result.policies_removed).toHaveLength(0);
     expect(result.policies_modified).toHaveLength(0);
-    expect(result.schema_changed).toBe(false);
+    expect(result.schema_diff.risk_level).toBe("safe");
+    expect(result.schema_diff.entity_types.modified).toHaveLength(0);
     expect(result.summary).toMatch(/no changes/i);
   });
 
@@ -167,7 +168,52 @@ describe("cedar_diff_policy_stores", () => {
     ]);
 
     const result = await handleDiffStores({ blue: "blue", green: "green" }, manager);
-    expect(result.schema_changed).toBe(true);
+
+    // Structured schema_diff: User.email added as required attribute → breaking
+    const userMod = result.schema_diff.entity_types.modified.find((m) => m.name === "User");
+    expect(userMod).toBeDefined();
+    const emailChange = userMod!.attribute_changes?.find((c) => c.attr === "email");
+    expect(emailChange).toBeDefined();
+    expect(emailChange!.change).toBe("added");
+    expect(emailChange!.risk).toBe("breaking");
+    expect(result.schema_diff.risk_level).toBe("breaking");
+    expect(result.summary).toMatch(/schema changed.*BREAKING/);
+  });
+
+  it("schema_diff is populated with empty diff when schemas match", async () => {
+    const bluePath = makeStore(tmpDir, "blue", { admin: ADMIN_POLICY }, SCHEMA_TEXT);
+    const greenPath = makeStore(tmpDir, "green", { admin: ADMIN_POLICY }, SCHEMA_TEXT);
+    manager.loadFromRoots([
+      { uri: `file://${bluePath}`, name: "blue" },
+      { uri: `file://${greenPath}`, name: "green" },
+    ]);
+
+    const result = await handleDiffStores({ blue: "blue", green: "green" }, manager);
+
+    expect(result.schema_diff.entity_types.added).toHaveLength(0);
+    expect(result.schema_diff.entity_types.removed).toHaveLength(0);
+    expect(result.schema_diff.entity_types.modified).toHaveLength(0);
+    expect(result.schema_diff.actions.added).toHaveLength(0);
+    expect(result.schema_diff.actions.removed).toHaveLength(0);
+    expect(result.schema_diff.risk_level).toBe("safe");
+  });
+
+  it("schema_diff surfaces action removal as breaking", async () => {
+    // Strip the WRITE and DELETE action declarations — each is its own statement ending in `};`
+    const altSchema = SCHEMA_TEXT
+      .replace("action WRITE appliesTo { principal: [User], resource: [Document], context: {} };", "")
+      .replace("action DELETE appliesTo { principal: [User], resource: [Document], context: {} };", "");
+    const bluePath = makeStore(tmpDir, "blue", { admin: ADMIN_POLICY }, SCHEMA_TEXT);
+    const greenPath = makeStore(tmpDir, "green", { admin: ADMIN_POLICY }, altSchema);
+    manager.loadFromRoots([
+      { uri: `file://${bluePath}`, name: "blue" },
+      { uri: `file://${greenPath}`, name: "green" },
+    ]);
+
+    const result = await handleDiffStores({ blue: "blue", green: "green" }, manager);
+
+    expect(result.schema_diff.actions.removed.length).toBeGreaterThanOrEqual(2);
+    expect(result.schema_diff.risk_level).toBe("breaking");
   });
 
   it("behavioral diff — reports invalid requests instead of silently skipping", async () => {
