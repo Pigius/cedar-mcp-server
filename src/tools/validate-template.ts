@@ -1,5 +1,9 @@
 import { templateToJson, validate } from "@cedar-policy/cedar-wasm/nodejs";
-import type { PolicyJson } from "@cedar-policy/cedar-wasm/nodejs";
+import type { PolicyJson, Schema } from "@cedar-policy/cedar-wasm/nodejs";
+
+function parseSchema(schemaStr: string): Schema {
+  try { return JSON.parse(schemaStr); } catch { return schemaStr; }
+}
 
 export interface ValidateTemplateInput {
   template: string;
@@ -45,7 +49,7 @@ export async function handleValidateTemplate(input: ValidateTemplateInput): Prom
   const templateId = "t0";
   let validateResult: ReturnType<typeof validate>;
   try {
-    validateResult = validate({ schema: input.schema, policies: { staticPolicies: {}, templates: { [templateId]: parseResult.json } } });
+    validateResult = validate({ schema: parseSchema(input.schema), policies: { staticPolicies: {}, templates: { [templateId]: parseResult.json } } });
   } catch (e) {
     return { valid: false, errors: [{ message: e instanceof Error ? e.message : String(e) }], warnings: [], slots_detected };
   }

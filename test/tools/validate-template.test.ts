@@ -67,4 +67,23 @@ describe("cedar_validate_template", () => {
 
     expect(result.error).toBeDefined();
   });
+
+  it("VT6 — accepts JSON schema format (not just cedarschema text)", async () => {
+    const jsonSchema = JSON.stringify({
+      App: {
+        entityTypes: {
+          User: { memberOfTypes: [], shape: { type: "Record", attributes: {} } },
+          Document: { memberOfTypes: [], shape: { type: "Record", attributes: {} } },
+        },
+        actions: {
+          read: { appliesTo: { principalTypes: ["User"], resourceTypes: ["Document"], context: { type: "Record", attributes: {} } } },
+        },
+      },
+    });
+
+    const result = await handleValidateTemplate({ template: VALID_TEMPLATE, schema: jsonSchema });
+
+    expect(result.error).toBeUndefined();
+    expect(result.valid).toBe(true);
+  });
 });

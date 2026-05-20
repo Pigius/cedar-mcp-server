@@ -526,7 +526,7 @@ Instantiates a Cedar template by binding its `?principal` and/or `?resource` slo
 
 **Note:** entity reference format is `Namespace::Type::"id"` — same as `cedar_authorize` principal/resource parameters.
 
-**When to use:** instantiating a template for a specific principal-resource pair before deploying to AVP via `CreatePolicy` (template-linked variant).
+**When to use:** instantiating a template to inspect the resulting policy or to validate it before deployment. For AVP, you'd upload the template once via `CreatePolicyTemplate` and create instances via `CreatePolicy` (template-linked variant) — `cedar_link_template` helps you reason about what those instances will look like before you make the API call.
 
 ---
 
