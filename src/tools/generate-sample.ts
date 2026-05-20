@@ -4,6 +4,11 @@ import {
   schemaToJsonWithResolvedTypes,
 } from "@cedar-policy/cedar-wasm/nodejs";
 import type { PolicyJson, Entities, Schema } from "@cedar-policy/cedar-wasm/nodejs";
+import {
+  extractLikeConstraints,
+  patternToString,
+  type LikeConstraint,
+} from "../parser/policy-ast.js";
 
 export interface GenerateSampleInput {
   policy: string;
@@ -54,10 +59,8 @@ function walkExpr(
   if (typeof expr !== "object" || expr === null) return;
   const e = expr as Record<string, unknown>;
 
-  // Check for unsupported "like" operator
-  if ("like" in e) {
-    throw new Error("path-matching conditions (like) not yet supported by cedar_generate_sample_request");
-  }
+  // "like" is handled separately via extractLikeConstraints — skip here
+  if ("like" in e) return;
 
   if ("&&" in e || "||" in e) {
     const key = "&&" in e ? "&&" : "||";
@@ -193,7 +196,8 @@ function buildEntities(
   scope: ScopeInfo,
   constraints: AttributeConstraint[],
   targetDecision: "allow" | "deny",
-  schemaNamespace: string
+  schemaNamespace: string,
+  likeConstraints: LikeConstraint[] = []
 ): { entities: EntityPayload[]; principalId: string; actionId: string; resourceId: string } {
   const principalId = "sample-principal";
   const resourceId = "sample-resource";
@@ -248,6 +252,29 @@ function buildEntities(
     }
   }
 
+  // Apply like-based attribute generation for attributes not already set by eq/has constraints.
+  // Strategy (proven by spike 2026-05-20):
+  //   allow → use positive pattern with single no-slash wildcard ("x") — avoids depth-limiting negations
+  //   deny  → use negative pattern (inside "!") with single no-slash wildcard ("x") —
+  //           generates a path that satisfies the negated like, making !like false → deny
+  //   deny with no negative pattern → fall back to a non-matching prefix string
+  for (const lc of likeConstraints) {
+    const target = lc.variable === "resource" ? resourceAttrs : principalAttrs;
+    // Skip if already set by an eq constraint (== takes priority — spike confirmed it covers allow)
+    if (target[lc.attr] !== undefined) continue;
+
+    if (targetDecision === "allow" && !lc.negated) {
+      target[lc.attr] = patternToString(lc.pattern, "x");
+    } else if (targetDecision === "deny" && lc.negated) {
+      // Satisfying the negative pattern makes !like false → deny
+      target[lc.attr] = patternToString(lc.pattern, "x");
+    } else if (targetDecision === "deny" && !lc.negated) {
+      // No negative pattern to exploit — use a non-matching prefix
+      // Validation loop will catch if this doesn't produce a deny
+      if (target[lc.attr] === undefined) target[lc.attr] = "/deny/path";
+    }
+  }
+
   const principalEntity: EntityPayload = {
     uid: { type: scope.principalType, id: principalId },
     attrs: principalAttrs,
@@ -291,32 +318,35 @@ export async function handleGenerateSample(input: GenerateSampleInput): Promise<
   }
   const json = policyResult.json;
 
-  // Parse schema
+  // Extract namespace from schema.
+  // schemaToJsonWithResolvedTypes only accepts Cedar text — for JSON schemas, parse directly.
   let schemaNamespace = "MyApp";
   try {
-    const schemaResult = schemaToJsonWithResolvedTypes(input.schema);
-    if (schemaResult.type === "success") {
-      const ns = Object.keys(schemaResult.json)[0];
-      if (ns) schemaNamespace = ns;
-    }
+    const parsed = JSON.parse(input.schema);
+    const ns = Object.keys(parsed)[0];
+    if (ns) schemaNamespace = ns;
   } catch {
-    // Non-fatal — proceed with default namespace
+    // Not JSON — try Cedar text schema
+    try {
+      const schemaResult = schemaToJsonWithResolvedTypes(input.schema);
+      if (schemaResult.type === "success") {
+        const ns = Object.keys(schemaResult.json)[0];
+        if (ns) schemaNamespace = ns;
+      }
+    } catch {
+      // Non-fatal — proceed with default namespace
+    }
   }
 
-  // Extract constraints — check for unsupported patterns
-  let constraints: AttributeConstraint[];
-  try {
-    constraints = extractConstraints(json.conditions);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return { principal: "", action: "", resource: "", entities: [], explanation: "", error: msg };
-  }
+  // Extract equality/has constraints and like constraints separately
+  const constraints: AttributeConstraint[] = extractConstraints(json.conditions);
+  const likeConstraints: LikeConstraint[] = extractLikeConstraints(json.conditions);
 
   const scope = extractScope(json, schemaNamespace);
 
-  // Build entities
+  // Build entities, passing like constraints for path-matching generation
   const { entities, principalId, actionId, resourceId } = buildEntities(
-    scope, constraints, input.target_decision, schemaNamespace
+    scope, constraints, input.target_decision, schemaNamespace, likeConstraints
   );
 
   const principalRef = `${scope.principalType}::"${principalId}"`;
@@ -344,8 +374,38 @@ export async function handleGenerateSample(input: GenerateSampleInput): Promise<
     };
   }
 
-  const actualDecision = authResult.response.decision === "allow" ? "Allow" : "Deny";
+  let actualDecision: "Allow" | "Deny" = authResult.response.decision === "allow" ? "Allow" : "Deny";
   const targetLabel = input.target_decision === "allow" ? "Allow" : "Deny";
+
+  // Retry once with fallback if initial generation missed the target.
+  // For like-deny with no negative pattern, try the opposite wildcard count.
+  if (actualDecision !== targetLabel && likeConstraints.length > 0) {
+    const fallbackAttrs = { ...entities.find(e => e.uid.type === scope.resourceType)?.attrs ?? {} };
+    for (const lc of likeConstraints.filter(l => !l.negated && l.variable === "resource")) {
+      // For deny fallback: try a completely off-prefix path
+      if (input.target_decision === "deny") fallbackAttrs[lc.attr] = "/deny/path/mismatch";
+      // For allow fallback: try two wildcard segments (sometimes needed for complex patterns)
+      if (input.target_decision === "allow") fallbackAttrs[lc.attr] = patternToString(lc.pattern, "sample");
+    }
+    const retryEntities = entities.map(e =>
+      e.uid.type === scope.resourceType ? { ...e, attrs: fallbackAttrs } : e
+    );
+    const retryResult = isAuthorized({
+      principal: { type: scope.principalType, id: principalId },
+      action: { type: scope.actionType, id: actionId },
+      resource: { type: scope.resourceType, id: resourceId },
+      context: {},
+      policies: { staticPolicies: input.policy },
+      entities: retryEntities as Entities,
+    });
+    if (retryResult.type === "success") {
+      const retryDecision = retryResult.response.decision === "allow" ? "Allow" : "Deny";
+      if (retryDecision === targetLabel) {
+        actualDecision = retryDecision;
+        entities.splice(0, entities.length, ...retryEntities);
+      }
+    }
+  }
 
   const explanation = actualDecision === targetLabel
     ? `This request will be ${actualDecision.toUpperCase()} as expected.`

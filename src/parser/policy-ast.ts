@@ -9,6 +9,16 @@
  *   - ExprTree: operator-as-key encoding ("==", "&&", "||", "has", ".", "Var", "Value")
  *   - Entity literals in scope: { type, id }
  *   - Entity literals in conditions: { "Value": { "__entity": { type, id } } }
+ *
+ * like operator shape (proven in spike 2026-05-20):
+ *   - { "like": { "left": Expr, "pattern": PatternElem[] } }
+ *   - PatternElem = "Wildcard" | { Literal: string }
+ *   - CRITICAL: pattern is CHARACTER-LEVEL — "/api/v1/*" produces one {Literal} per char,
+ *     not one {Literal: "/api/v1/"} node. Reconstruct by joining all Literal chars,
+ *     substituting "Wildcard" positions with the desired value.
+ *   - Negated like: { "!": { "arg": { "like": { ... } } } }
+ *   - Cedar wildcard matches any char sequence INCLUDING "/". Depth-limiting works via TWO wildcards:
+ *     "like X/WILDCARD" matches any depth; "like X/WILDCARD/WILDCARD" also matches — negation limits to one segment.
  */
 
 import type { PolicyJson, Clause, Expr } from "@cedar-policy/cedar-wasm/nodejs";
@@ -229,6 +239,88 @@ function formatEntity(e: { type: string; id: string } | unknown): string {
     return `${entity.type}::"${entity.id}"`;
   }
   return JSON.stringify(e);
+}
+
+// ─── like operator utilities ──────────────────────────────────────────────────
+
+export type PatternElem = "Wildcard" | { Literal: string };
+
+export interface LikeConstraint {
+  variable: "principal" | "resource" | "context";
+  attr: string;
+  pattern: PatternElem[];
+  negated: boolean;
+}
+
+/**
+ * Reconstructs a string from a PatternElem array.
+ * Each Wildcard is replaced by wildcardValue.
+ * Pattern is character-level (one Literal node per char) — join them all.
+ */
+export function patternToString(pattern: PatternElem[], wildcardValue: string): string {
+  return pattern
+    .map((e) => (e === "Wildcard" ? wildcardValue : (e as { Literal: string }).Literal))
+    .join("");
+}
+
+/**
+ * Walks condition bodies and extracts all `like` constraints (positive and negated).
+ * Returns constraints keyed by variable.attr so callers can decide which to use.
+ */
+export function extractLikeConstraints(conditions: PolicyJson["conditions"]): LikeConstraint[] {
+  const result: LikeConstraint[] = [];
+  for (const clause of conditions) {
+    walkLikeExpr(clause.body, false, result);
+  }
+  return result;
+}
+
+function walkLikeExpr(expr: unknown, insideNot: boolean, acc: LikeConstraint[]): void {
+  if (typeof expr !== "object" || expr === null) return;
+  const e = expr as Record<string, unknown>;
+
+  if ("&&" in e || "||" in e) {
+    const key = "&&" in e ? "&&" : "||";
+    const node = e[key] as { left: unknown; right: unknown };
+    walkLikeExpr(node.left, insideNot, acc);
+    walkLikeExpr(node.right, insideNot, acc);
+    return;
+  }
+
+  if ("!" in e) {
+    const node = e["!"] as { arg: unknown };
+    walkLikeExpr(node.arg, !insideNot, acc);
+    return;
+  }
+
+  if ("like" in e) {
+    const node = e["like"] as { left: unknown; pattern: PatternElem[] };
+    const attrAccess = extractAttrFromLike(node.left);
+    if (attrAccess) {
+      acc.push({
+        variable: attrAccess.variable,
+        attr: attrAccess.attr,
+        pattern: node.pattern,
+        negated: insideNot,
+      });
+    }
+    return;
+  }
+}
+
+function extractAttrFromLike(
+  expr: unknown
+): { variable: "principal" | "resource" | "context"; attr: string } | null {
+  if (typeof expr !== "object" || expr === null) return null;
+  const e = expr as Record<string, unknown>;
+  if ("." in e) {
+    const node = e["."] as { left: unknown; attr: string };
+    const v = (node.left as Record<string, unknown>)?.["Var"];
+    if (v === "principal" || v === "resource" || v === "context") {
+      return { variable: v as "principal" | "resource" | "context", attr: node.attr };
+    }
+  }
+  return null;
 }
 
 function formatValue(v: unknown): string {
