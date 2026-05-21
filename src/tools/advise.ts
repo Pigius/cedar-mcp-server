@@ -136,7 +136,7 @@ const CEDAR_PATTERNS_DETAIL: CedarPatternDescription[] = [
 
 const NEXT_STEPS_FOR_LLM = `Use this context to produce a Cedar policy change plan. Do not skip these steps:
 
-1. Identify the entity types, attributes, and actions in schema_summary that the user's intent touches. If schema_summary is absent (store_status != "loaded"), state the assumption you are making about the schema and ask the user to confirm.
+1. Identify the entity types, attributes, and actions in schema_summary that the user's intent touches. If schema_summary is absent (store_status != "loaded"), state the assumption you are making about the schema and ask the user to confirm. If policy_inventory is empty even though the store loaded, state that the store has no policies yet and confirm with the user before proposing anything other than initial-state policies.
 2. Pick the most appropriate cedar_patterns_reference pattern for the change. If the store already uses a dominant pattern (see patterns_detected_in_store), prefer it for consistency unless the intent requires otherwise.
 3. Sequence steps per sequencing_guidance. Schema changes that add a referenced attribute MUST precede policy changes that read it.
 4. For each step that modifies an existing policy, classify it against avp_update_policy_rules. Effect / principal / resource changes require delete-and-recreate; action and when/unless changes are in-place.
