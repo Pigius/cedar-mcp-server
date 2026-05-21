@@ -1,5 +1,5 @@
 import { validate, checkParsePolicySet, policySetTextToParts } from "@cedar-policy/cedar-wasm/nodejs";
-import type { Schema } from "@cedar-policy/cedar-wasm/nodejs";
+import type { Schema, DetailedError } from "@cedar-policy/cedar-wasm/nodejs";
 
 export interface ValidateInput {
   policies: string;
@@ -10,6 +10,10 @@ export interface ValidateError {
   policy_id: string;
   message: string;
   hint: string | null;
+  /** 1-indexed line of the source location, when the WASM error reports one. */
+  line?: number;
+  /** 1-indexed column of the source location, when the WASM error reports one. */
+  column?: number;
 }
 
 export interface ValidateResult {
@@ -18,6 +22,33 @@ export interface ValidateResult {
   warnings: ValidateError[];
   policy_count: number;
 }
+
+/**
+ * Common Cedar typo → suggestion table. Used to populate the `hint` field on
+ * parse errors of the form "unexpected token `X`" when X is a known misspelling
+ * of a Cedar keyword. Keep small and conservative; better to leave hint null
+ * than to over-suggest. Levenshtein over the reserved keyword set is the
+ * future generalization if this table proves too narrow.
+ */
+const TYPO_HINTS: Record<string, string> = {
+  int: "in",
+  permint: "permit",
+  forbit: "forbid",
+  prinipal: "principal",
+  prncipal: "principal",
+  resorce: "resource",
+  resoure: "resource",
+  actoin: "action",
+  acton: "action",
+  unles: "unless",
+  wen: "when",
+  Like: "like",
+  Has: "has",
+  Permit: "permit",
+  Forbid: "forbid",
+  When: "when",
+  Unless: "unless",
+};
 
 function parseSchema(schemaStr: string): Schema {
   try {
@@ -34,6 +65,57 @@ function countPolicies(policiesText: string): number {
   return parts.policies.length + parts.policy_templates.length;
 }
 
+/** Convert a byte offset into the source text into 1-indexed line + column. */
+function offsetToLineCol(source: string, offset: number): { line: number; column: number } {
+  if (offset < 0 || offset > source.length) {
+    return { line: 1, column: 1 };
+  }
+  let line = 1;
+  let column = 1;
+  for (let i = 0; i < offset; i++) {
+    if (source.charCodeAt(i) === 10 /* \n */) {
+      line++;
+      column = 1;
+    } else {
+      column++;
+    }
+  }
+  return { line, column };
+}
+
+/**
+ * Pull the offending token out of a Cedar parse error message, if present.
+ * Cedar emits a few distinct error templates depending on where the token
+ * appears in the grammar; this matches the ones common typos produce.
+ */
+function extractOffendingToken(message: string): string | null {
+  const patterns: RegExp[] = [
+    /unexpected token `([^`]+)`/,                          // operator / keyword in expressions
+    /invalid variable in the policy scope: (\S+)/,         // mis-typed principal / action / resource
+    /invalid policy effect: (\S+)/,                        // mis-typed permit / forbid
+  ];
+  for (const re of patterns) {
+    const m = message.match(re);
+    if (m) return m[1]!;
+  }
+  return null;
+}
+
+/** Suggest a hint string for a known typo, or null if none applies. */
+function typoHint(message: string): string | null {
+  const token = extractOffendingToken(message);
+  if (!token) return null;
+  const suggestion = TYPO_HINTS[token];
+  return suggestion ? `Did you mean '${suggestion}'?` : null;
+}
+
+/** Best-effort source location: prefer error's own sourceLocations[0]; null if none. */
+function locationFor(err: DetailedError, source: string): { line: number; column: number } | null {
+  const loc = err.sourceLocations?.[0];
+  if (!loc || typeof loc.start !== "number") return null;
+  return offsetToLineCol(source, loc.start);
+}
+
 export async function handleValidate(input: ValidateInput): Promise<ValidateResult> {
   const schema = parseSchema(input.schema);
 
@@ -47,27 +129,52 @@ export async function handleValidate(input: ValidateInput): Promise<ValidateResu
   if (answer.type === "failure") {
     return {
       valid: false,
-      errors: answer.errors.map((e) => ({
-        policy_id: "",
-        message: e.message,
-        hint: null,
-      })),
+      errors: answer.errors.map((e) => {
+        const loc = locationFor(e, input.policies);
+        const hint = typoHint(e.message) ?? e.help ?? null;
+        const base: ValidateError = {
+          policy_id: "",
+          message: e.message,
+          hint,
+        };
+        if (loc) {
+          base.line = loc.line;
+          base.column = loc.column;
+        }
+        return base;
+      }),
       warnings: [],
       policy_count: countPolicies(input.policies),
     };
   }
 
-  const errors: ValidateError[] = answer.validationErrors.map((e) => ({
-    policy_id: e.policyId,
-    message: e.error.message,
-    hint: e.error.help ?? null,
-  }));
+  const errors: ValidateError[] = answer.validationErrors.map((e) => {
+    const loc = locationFor(e.error, input.policies);
+    const base: ValidateError = {
+      policy_id: e.policyId,
+      message: e.error.message,
+      hint: typoHint(e.error.message) ?? e.error.help ?? null,
+    };
+    if (loc) {
+      base.line = loc.line;
+      base.column = loc.column;
+    }
+    return base;
+  });
 
-  const warnings: ValidateError[] = answer.validationWarnings.map((e) => ({
-    policy_id: e.policyId,
-    message: e.error.message,
-    hint: e.error.help ?? null,
-  }));
+  const warnings: ValidateError[] = answer.validationWarnings.map((e) => {
+    const loc = locationFor(e.error, input.policies);
+    const base: ValidateError = {
+      policy_id: e.policyId,
+      message: e.error.message,
+      hint: typoHint(e.error.message) ?? e.error.help ?? null,
+    };
+    if (loc) {
+      base.line = loc.line;
+      base.column = loc.column;
+    }
+    return base;
+  });
 
   return {
     valid: errors.length === 0,

@@ -257,12 +257,34 @@ Validates Cedar policies against a schema. Returns errors with hints, source loc
     {
       "policy_id": "policy0",
       "message": "attribute `nonexistent` on entity type `DocMgmt::Document` not found",
-      "hint": "did you mean `classification`?"
+      "hint": "did you mean `classification`?",
+      "line": 1,
+      "column": 47
     }
   ],
   "policy_count": 1
 }
 ```
+
+**Parse error with a typo hint:**
+
+```json
+{
+  "valid": false,
+  "errors": [
+    {
+      "policy_id": "",
+      "message": "failed to parse policies from string: unexpected token `int`",
+      "hint": "Did you mean 'in'?",
+      "line": 3,
+      "column": 10
+    }
+  ],
+  "policy_count": 0
+}
+```
+
+Each error includes `line` and `column` (1-indexed) derived from the WASM parser's source location when available. The `hint` field is populated either from Cedar's own diagnostic help text or from a small built-in typo table for common misspellings (`int` for `in`, `permint` for `permit`, `prinipal` for `principal`, `wen` for `when`, `unles` for `unless`, etc.). When neither applies, `hint` is `null`.
 
 **When to use:** every time you write or modify a policy. Schema validation catches attribute typos, entity type mismatches, and action applicability errors before they become silent runtime surprises.
 
