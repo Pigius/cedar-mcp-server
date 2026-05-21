@@ -11,19 +11,32 @@
 
 ## What it does
 
-Seventeen tools across four categories, plus three MCP prompts:
+Seventeen tools across six categories, plus three MCP prompts.
 
-**Validation and evaluation** — work with Cedar policies without leaving the conversation.
+**Authorization** — make decisions: single requests or batches.
+
+| Tool | What it does |
+|------|-------------|
+| [`cedar_authorize`](#cedar_authorize) | Evaluates one authorization request locally; returns the decision and which policies fired |
+| [`cedar_authorize_batch`](#cedar_authorize_batch) | Runs N authorization requests through one policy set and returns the decision matrix; for regression testing after a policy edit |
+
+**Validation** — confirm policies, schemas, templates, and entities are well-formed.
 
 | Tool | What it does |
 |------|-------------|
 | [`cedar_validate`](#cedar_validate) | Validates Cedar policies against a schema; returns errors with hints and source locations |
-| [`cedar_authorize`](#cedar_authorize) | Evaluates an authorization request locally; returns the decision and which policies fired |
-| [`cedar_authorize_batch`](#cedar_authorize_batch) | Runs N authorization requests through one policy set and returns the decision matrix; for regression testing after a policy edit |
+| [`cedar_validate_schema`](#cedar_validate_schema) | Validates a Cedar schema in isolation (no policies required); returns parse errors and namespace/type counts |
+| [`cedar_validate_template`](#cedar_validate_template) | Validates a Cedar template against a schema; detects slot placeholders |
+| [`cedar_validate_entities`](#cedar_validate_entities) | Validates a Cedar entities JSON array against a schema; classifies errors by kind (unknown_type, missing_required_attribute, type_mismatch, unknown_attribute, disallowed_parent_type) |
+
+**Formatting and translation** — transform policy/schema text without changing semantics.
+
+| Tool | What it does |
+|------|-------------|
 | [`cedar_format`](#cedar_format) | Formats Cedar policy text to canonical style |
 | [`cedar_translate`](#cedar_translate) | Translates between Cedar text and Cedar JSON formats for policies and schemas |
 
-**Planning and understanding** — reason about policy design and changes before writing code.
+**Planning and analysis** — reason about policy design, changes, and intent.
 
 | Tool | What it does |
 |------|-------------|
@@ -32,34 +45,49 @@ Seventeen tools across four categories, plus three MCP prompts:
 | [`cedar_generate_sample_request`](#cedar_generate_sample_request) | Generates a complete authorization request payload that produces a target decision |
 | [`cedar_advise`](#cedar_advise) | Translates a natural-language intent into a step-by-step Cedar policy change plan (uses MCP sampling) |
 
-**Templates** — author, validate, instantiate, and inspect Cedar template-linked policies.
+**Templates** — instantiate and inspect template-linked policies (template validation lives in **Validation**).
 
 | Tool | What it does |
 |------|-------------|
-| [`cedar_validate_template`](#cedar_validate_template) | Validates a Cedar template against a schema; detects slot placeholders |
 | [`cedar_link_template`](#cedar_link_template) | Instantiates a template by binding `?principal` and `?resource` slots to specific entity references |
 | [`cedar_list_templates`](#cedar_list_templates) | Lists all templates in a policy store (reads from `templates/` subdirectory) |
 | [`cedar_list_template_links`](#cedar_list_template_links) | Lists all template-linked policy instances in a store (reads from `template-links/` subdirectory) |
 
-**Schema and entities** — work with schemas and entity stores independently of policies.
+**Diffing** — compare two schemas or two policy stores before promoting changes.
 
 | Tool | What it does |
 |------|-------------|
-| [`cedar_validate_schema`](#cedar_validate_schema) | Validates a Cedar schema in isolation (no policies required); returns parse errors and namespace/type counts |
 | [`cedar_diff_schema`](#cedar_diff_schema) | Structural diff of two schemas with AVP-aware risk classification per change (safe/review/breaking) |
-| [`cedar_validate_entities`](#cedar_validate_entities) | Validates a Cedar entities JSON array against a schema; classifies errors by kind (unknown_type, missing_required_attribute, type_mismatch, unknown_attribute) |
-
-**Diffing** — compare two policy stores before promoting changes to production.
-
-| Tool | What it does |
-|------|-------------|
-| [`cedar_diff_policy_stores`](#cedar_diff_policy_stores) | Structural and optional behavioral diff between two policy stores with AVP immutability classification (now embeds structured `schema_diff` from `cedar_diff_schema`) |
+| [`cedar_diff_policy_stores`](#cedar_diff_policy_stores) | Structural and optional behavioral diff between two policy stores with AVP immutability classification (embeds structured `schema_diff` from `cedar_diff_schema`) |
 
 ---
 
 ## Quick start
 
-### Claude Code
+> **Pre-release status:** this package is not yet published to npm. The `npx cedar-mcp-server` snippets below are the post-publish configuration; for now, install from source (see [Running from source](#running-from-source) below) and point your MCP client at the resulting local script instead of `npx`.
+
+### Run from source (current path)
+
+```bash
+git clone https://github.com/Pigius/cedar-mcp-server.git
+cd cedar-mcp-server
+npm install
+npm run build      # compiles TypeScript to dist/
+```
+
+Then point your MCP client at the built entry. Replace `command: "npx"` and `args: ["-y", "cedar-mcp-server"]` in the configs below with:
+
+```json
+{ "command": "node", "args": ["/absolute/path/to/cedar-mcp-server/dist/index.js"] }
+```
+
+Or run directly via `tsx` without a build step:
+
+```json
+{ "command": "npx", "args": ["tsx", "/absolute/path/to/cedar-mcp-server/src/index.ts"] }
+```
+
+### Claude Code (after publish)
 
 Add to `.claude/settings.json` in your project, or to `~/.claude/settings.json` globally:
 
@@ -74,7 +102,7 @@ Add to `.claude/settings.json` in your project, or to `~/.claude/settings.json` 
 }
 ```
 
-### Claude Desktop
+### Claude Desktop (after publish)
 
 Add to `claude_desktop_config.json`:
 
@@ -89,7 +117,7 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
-### Cursor
+### Cursor (after publish)
 
 Add to `.cursor/mcp.json` in your project:
 
@@ -104,7 +132,7 @@ Add to `.cursor/mcp.json` in your project:
 }
 ```
 
-First run pulls the package via `npx`. Subsequent runs use the npm cache.
+Once published, first `npx` run pulls the package; subsequent runs use the npm cache.
 
 Then in your client conversation:
 

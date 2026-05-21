@@ -43,9 +43,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). This pr
 - Per-session McpServer + transport pair with stateful `Mcp-Session-Id` routing (Streamable HTTP spec requires per-session protocol state).
 - Shared `storeManager` across HTTP sessions — deployment model is "one server per policy-store set." Deployer-configured roots via repeatable `--root` flags; client `listRoots()` is not called in HTTP mode.
 - Security: localhost default-binding with DNS rebinding protection via the SDK's `createMcpExpressApp`. Non-localhost binding is the deployer's responsibility (auth via reverse proxy).
-- New `/health` endpoint returns `{ status, transport, mode, active_sessions }`.
+- Max-sessions cap (default 100) returns HTTP 503 when reached; backpressure rather than eviction. Configurable via `maxSessions` option or `CEDAR_MAX_HTTP_SESSIONS` env var.
+- Idle-session TTL (default 30 min) with a periodic reaper that evicts sessions whose last request exceeds the TTL. Catches the case where `transport.onclose` doesn't fire (network partition, TCP RST). Configurable via `sessionIdleTtlMs` option or `CEDAR_HTTP_SESSION_IDLE_TTL_MS` env var.
+- New `/health` endpoint returns `{ status, transport, mode, active_sessions, max_sessions, session_idle_ttl_ms }`.
 - New deps: `express`, `@types/express`.
-- 5 new integration smoke tests (H1-H5) covering listTools/cedar_validate/cedar_authorize over real HTTP transport, the /health endpoint, and a falsification case (malformed JSON body returns a structured error, not a crash).
+- Integration smoke tests covering listTools/cedar_validate/cedar_authorize over real HTTP transport, the /health endpoint, malformed JSON body falsification, multiple concurrent sessions via independent Mcp-Session-Id, the deployer-configured `--root` path (cedar:// URI resolution end-to-end), max-sessions cap returning 503, and idle TTL eviction by the reaper.
 
 ### Changed
 - `cedar_diff_policy_stores`: `schema_diff` field is now a structured `SchemaDiff` object (with per-change risk classification) replacing the previous `schema_changed: boolean` + `schema_diff_note: string` fields.

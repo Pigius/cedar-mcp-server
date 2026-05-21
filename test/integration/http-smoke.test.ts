@@ -427,6 +427,111 @@ describe("integration HTTP smoke — with --root configured", () => {
     }
   }, 20_000);
 
+  it("HR5 — max-sessions cap returns HTTP 503 instead of unbounded growth", async () => {
+    // The failure mode this guards against: long-running deployments leaking
+    // sessions if transport.onclose doesn't fire (TCP RST, network partition,
+    // misbehaving client). Without a cap the sessions Map grows unbounded.
+    //
+    // This test starts a dedicated server with maxSessions: 2, opens 2 valid
+    // sessions, then verifies a third initialize request returns HTTP 503
+    // with a structured error body.
+    const port = await getFreePort();
+    const cappedServer = await startHttpServer({
+      port,
+      host: "127.0.0.1",
+      maxSessions: 2,
+      reaperIntervalMs: 60_000,  // disable reaper for this test
+    });
+    const cappedUrl = `http://127.0.0.1:${port}/mcp`;
+
+    try {
+      // Fill the cap with two real sessions
+      const c1 = new Client({ name: "cap-1", version: "1.0.0" }, { capabilities: {} });
+      const t1 = new StreamableHTTPClientTransport(new URL(cappedUrl));
+      await c1.connect(t1);
+      await c1.listTools();
+
+      const c2 = new Client({ name: "cap-2", version: "1.0.0" }, { capabilities: {} });
+      const t2 = new StreamableHTTPClientTransport(new URL(cappedUrl));
+      await c2.connect(t2);
+      await c2.listTools();
+
+      try {
+        // Third initialize attempt — must hit the cap. Use raw fetch so we can
+        // observe the HTTP status code directly (SDK client would just throw).
+        const res = await fetch(cappedUrl, {
+          method: "POST",
+          headers: { "content-type": "application/json", "accept": "application/json, text/event-stream" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "initialize",
+            params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "cap-overflow", version: "1.0.0" } },
+          }),
+        });
+        expect(res.status).toBe(503);
+        const body = await res.json() as { error: string; active_sessions: number; max_sessions: number };
+        expect(body.error).toMatch(/too many|max-session/i);
+        expect(body.max_sessions).toBe(2);
+        expect(body.active_sessions).toBe(2);
+
+        // Health should reflect the cap as configured
+        const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json() as { max_sessions: number };
+        expect(health.max_sessions).toBe(2);
+      } finally {
+        await c1.close().catch(() => { /* ignore */ });
+        await c2.close().catch(() => { /* ignore */ });
+      }
+    } finally {
+      await cappedServer.close();
+    }
+  }, 30_000);
+
+  it("HR6 — idle sessions are evicted by the reaper after the configured TTL", async () => {
+    // The failure mode: transport.onclose unreliable on network faults; without
+    // the reaper, the sessions Map leaks. This test sets a very short idle TTL
+    // (200ms) and a fast reaper interval (50ms), opens a session, waits long
+    // enough for eviction, then verifies active_sessions drops to 0.
+    //
+    // We don't try to use the evicted session afterward — the SDK client would
+    // try to send on a stale transport and get a 404 (the spec'd response for
+    // unknown session id). That's a separate test that depends on the SDK
+    // client's error semantics.
+    const port = await getFreePort();
+    const reaperServer = await startHttpServer({
+      port,
+      host: "127.0.0.1",
+      sessionIdleTtlMs: 200,
+      reaperIntervalMs: 50,
+    });
+    const reaperUrl = `http://127.0.0.1:${port}`;
+
+    try {
+      const client = new Client({ name: "reap-target", version: "1.0.0" }, { capabilities: {} });
+      const transport = new StreamableHTTPClientTransport(new URL(`${reaperUrl}/mcp`));
+      await client.connect(transport);
+      await client.listTools();
+
+      // Confirm the session is registered
+      const before = await (await fetch(`${reaperUrl}/health`)).json() as { active_sessions: number };
+      expect(before.active_sessions).toBeGreaterThanOrEqual(1);
+
+      // Wait > (idle TTL + reaper interval) so eviction definitely fires
+      await new Promise<void>((resolve) => setTimeout(resolve, 500));
+
+      const after = await (await fetch(`${reaperUrl}/health`)).json() as { active_sessions: number };
+      // After idle eviction, the session count must drop. (Note: client may
+      // not have called .close() at this point, but the reaper acted on its
+      // own.)
+      expect(after.active_sessions).toBeLessThan(before.active_sessions);
+
+      // Cleanup client — it'll get an error closing over evicted transport, ignore
+      await client.close().catch(() => { /* ignore */ });
+    } finally {
+      await reaperServer.close();
+    }
+  }, 30_000);
+
   it("HR4 — /health exposes active_sessions count + the deployer roots model", async () => {
     // The /health endpoint reports active_sessions. Open a session, hit /health,
     // verify count went up. Catches a leak where active_sessions doesn't
