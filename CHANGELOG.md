@@ -93,3 +93,9 @@ First tagged release. All four implementation phases shipped.
 
 [Unreleased]: https://github.com/Pigius/cedar-mcp-server/compare/v0.0.1...HEAD
 [0.0.1]: https://github.com/Pigius/cedar-mcp-server/releases/tag/v0.0.1
+
+---
+
+## Release process
+
+To release: bump version in `package.json`, commit, `git tag v0.X.Y`, `git push --tags`. The release workflow runs build + tests + `npm publish` with provenance. Requires `NPM_TOKEN` repo secret pre-configured.
