@@ -315,3 +315,119 @@ describe("cedar_authorize — format detection and auto-normalization", () => {
     expect(result.format_detected).toBe("avp");
   });
 });
+
+describe("cedar_authorize — H1 stable policy identifiers in determining_policies", () => {
+  it("returns the @id annotation when a permit policy has one", async () => {
+    const policies = `
+@id("admin-read")
+permit (
+  principal,
+  action == DocMgmt::Action::"READ",
+  resource
+);
+`.trim();
+    const result = await handleAuthorize({
+      policies,
+      principal: 'DocMgmt::User::"alice"',
+      action: 'DocMgmt::Action::"READ"',
+      resource: 'DocMgmt::Document::"doc-public"',
+      entities: JSON.stringify(ENTITIES),
+    });
+    expect(result.decision).toBe("Allow");
+    expect(result.determining_policies).toEqual(["admin-read"]);
+  });
+
+  it("falls back to policy<index> when no @id annotation and no file basename is known", async () => {
+    const policies = `permit (principal, action, resource);`;
+    const result = await handleAuthorize({
+      policies,
+      principal: 'DocMgmt::User::"alice"',
+      action: 'DocMgmt::Action::"READ"',
+      resource: 'DocMgmt::Document::"doc-public"',
+      entities: JSON.stringify(ENTITIES),
+    });
+    expect(result.decision).toBe("Allow");
+    expect(result.determining_policies).toEqual(["policy0"]);
+  });
+
+  it("uses the policiesMap key (file basename) as the determining policy id", async () => {
+    const result = await handleAuthorize({
+      policiesMap: {
+        admin: `permit (principal in DocMgmt::Role::"admin", action, resource);`,
+      },
+      principal: 'DocMgmt::User::"alice"',
+      action: 'DocMgmt::Action::"READ"',
+      resource: 'DocMgmt::Document::"doc-public"',
+      entities: JSON.stringify(ENTITIES),
+    });
+    expect(result.decision).toBe("Allow");
+    expect(result.determining_policies).toEqual(["admin"]);
+  });
+
+  it("prefers @id annotation over the policiesMap key when both are present", async () => {
+    const result = await handleAuthorize({
+      policiesMap: {
+        admin: `@id("admin-read-all")\npermit (principal in DocMgmt::Role::"admin", action, resource);`,
+      },
+      principal: 'DocMgmt::User::"alice"',
+      action: 'DocMgmt::Action::"READ"',
+      resource: 'DocMgmt::Document::"doc-public"',
+      entities: JSON.stringify(ENTITIES),
+    });
+    expect(result.decision).toBe("Allow");
+    expect(result.determining_policies).toEqual(["admin-read-all"]);
+  });
+});
+
+describe("cedar_authorize — M3 decision_reason field", () => {
+  it("returns decision_reason = permit_policy_fired on Allow", async () => {
+    const result = await handleAuthorize({
+      policies: POLICIES,
+      principal: 'DocMgmt::User::"alice"',
+      action: 'DocMgmt::Action::"READ"',
+      resource: 'DocMgmt::Document::"doc-public"',
+      entities: JSON.stringify(ENTITIES),
+    });
+    expect(result.decision).toBe("Allow");
+    expect(result.decision_reason).toBe("permit_policy_fired");
+  });
+
+  it("returns decision_reason = default_deny_no_permit_matched when no policy fires", async () => {
+    const result = await handleAuthorize({
+      policies: POLICIES,
+      principal: 'DocMgmt::User::"dave"',
+      action: 'DocMgmt::Action::"READ"',
+      resource: 'DocMgmt::Document::"doc-public"',
+      entities: JSON.stringify(ENTITIES),
+    });
+    expect(result.decision).toBe("Deny");
+    expect(result.determining_policies).toHaveLength(0);
+    expect(result.decision_reason).toBe("default_deny_no_permit_matched");
+  });
+
+  it("returns decision_reason = forbid_policy_fired when a forbid policy is determining", async () => {
+    const result = await handleAuthorize({
+      policies: POLICIES,
+      principal: 'DocMgmt::User::"bob"',
+      action: 'DocMgmt::Action::"READ"',
+      resource: 'DocMgmt::Document::"doc-secret"',
+      entities: JSON.stringify(ENTITIES),
+    });
+    expect(result.decision).toBe("Deny");
+    expect(result.decision_reason).toBe("forbid_policy_fired");
+  });
+
+  it("returns decision_reason = evaluation_error when a policy errors during evaluation", async () => {
+    // Policy reads principal.missing — entity lacks that attribute, causing an evaluation error.
+    const policies = `permit(principal, action, resource) when { principal.missing == "x" };`;
+    const result = await handleAuthorize({
+      policies,
+      principal: 'DocMgmt::User::"alice"',
+      action: 'DocMgmt::Action::"READ"',
+      resource: 'DocMgmt::Document::"doc-public"',
+      entities: JSON.stringify(ENTITIES),
+    });
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.decision_reason).toBe("evaluation_error");
+  });
+});

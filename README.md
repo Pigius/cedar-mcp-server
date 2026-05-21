@@ -291,8 +291,9 @@ Evaluates an authorization request locally against your policies and entities. R
 ```json
 {
   "decision": "Allow",
-  "determining_policies": ["policy0"],
-  "errors": []
+  "determining_policies": ["admin-read"],
+  "errors": [],
+  "decision_reason": "permit_policy_fired"
 }
 ```
 
@@ -302,11 +303,19 @@ Evaluates an authorization request locally against your policies and entities. R
 {
   "decision": "Deny",
   "determining_policies": [],
-  "errors": []
+  "errors": [],
+  "decision_reason": "default_deny_no_permit_matched"
 }
 ```
 
-`determining_policies` lists the policy IDs that contributed to the decision. On a deny caused by a `forbid` policy, that policy's ID appears here. An empty list means default deny: no `permit` matched.
+`determining_policies` lists the stable policy IDs that contributed to the decision. The ID resolution order is: the policy's `@id("name")` annotation if present, then the source file basename when policies are loaded via `policy_ref` (e.g. `admin.cedar` becomes `admin`), then a positional fallback `policy0`, `policy1`, etc. for unannotated inline text. On a deny caused by a `forbid` policy, that policy's ID appears here. An empty list means default deny: no `permit` matched.
+
+`decision_reason` is an explicit machine-readable classification of the outcome. It takes one of four values:
+
+- `permit_policy_fired` when `decision: "Allow"` and at least one permit policy is determining.
+- `forbid_policy_fired` when `decision: "Deny"` and at least one forbid policy is determining.
+- `default_deny_no_permit_matched` when `decision: "Deny"`, no policy fired, and no evaluation errors occurred. This is the Cedar default-deny path.
+- `evaluation_error` when at least one policy errored during evaluation (for example, a policy reads an attribute the entity lacks). Pair with the `errors` array for details.
 
 **When to use:** verifying authorization logic after writing a policy, and checking that your entity payloads produce the expected decisions before deploying.
 

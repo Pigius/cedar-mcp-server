@@ -78,14 +78,43 @@ export function createServer(): McpServer {
       context: z.string().optional().describe("Optional JSON object with context attributes"),
     },
     async (input) => {
-      // Resolve policy_ref / schema_ref — inline values take precedence
+      // Resolve policy_ref / schema_ref — inline values take precedence.
+      // When policy_ref points at a whole store (cedar://policies/{store}),
+      // load each policy file separately so its basename surfaces as the
+      // determining-policies id rather than collapsing into a single blob.
       let policies = input.policies;
+      let policiesMap: Record<string, string> | undefined;
       if (!policies && input.policy_ref) {
-        const resolved = resolveRef(input.policy_ref);
-        if ("error" in resolved) return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }] };
-        policies = resolved.content;
+        const storeMatch = input.policy_ref.match(/^cedar:\/\/policies\/([^/]+)$/);
+        const singleMatch = input.policy_ref.match(/^cedar:\/\/policies\/([^/]+)\/([^/]+)$/);
+        if (storeMatch) {
+          const storeName = storeMatch[1]!;
+          try {
+            const ids = storeManager.listPolicies(storeName);
+            policiesMap = {};
+            for (const id of ids) {
+              policiesMap[id] = storeManager.readPolicy(storeName, id);
+            }
+          } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            return { content: [{ type: "text", text: JSON.stringify({ error: message }) }] };
+          }
+        } else if (singleMatch) {
+          const storeName = singleMatch[1]!;
+          const policyId = singleMatch[2]!;
+          try {
+            policiesMap = { [policyId]: storeManager.readPolicy(storeName, policyId) };
+          } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            return { content: [{ type: "text", text: JSON.stringify({ error: message }) }] };
+          }
+        } else {
+          const resolved = resolveRef(input.policy_ref);
+          if ("error" in resolved) return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }] };
+          policies = resolved.content;
+        }
       }
-      if (!policies) return { content: [{ type: "text", text: JSON.stringify({ error: "Either policies or policy_ref is required" }) }] };
+      if (!policies && !policiesMap) return { content: [{ type: "text", text: JSON.stringify({ error: "Either policies or policy_ref is required" }) }] };
 
       let schema = input.schema;
       if (!schema && input.schema_ref) {
@@ -102,7 +131,7 @@ export function createServer(): McpServer {
       }
       if (!entities) return { content: [{ type: "text", text: JSON.stringify({ error: "Either entities or entities_ref is required" }) }] };
 
-      const result = await handleAuthorize({ ...input, policies, schema, entities });
+      const result = await handleAuthorize({ ...input, policies, policiesMap, schema, entities });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
