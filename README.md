@@ -43,7 +43,7 @@ Seventeen tools across six categories, plus three MCP prompts.
 | [`cedar_explain`](#cedar_explain) | Explains a Cedar policy in plain English with pattern detection |
 | [`cedar_check_policy_change`](#cedar_check_policy_change) | Determines whether a policy modification can be applied in-place in AVP or requires delete-and-recreate |
 | [`cedar_generate_sample_request`](#cedar_generate_sample_request) | Generates a complete authorization request payload that produces a target decision |
-| [`cedar_advise`](#cedar_advise) | Translates a natural-language intent into a step-by-step Cedar policy change plan (uses MCP sampling) |
+| [`cedar_advise`](#cedar_advise) | Returns a structured context bundle (schema summary, policy inventory with pattern classification, gotchas, AVP rules, sequencing guidance) for any policy-change intent so the calling assistant can plan correctly |
 
 **Templates** — instantiate and inspect template-linked policies (template validation lives in **Validation**).
 
@@ -59,6 +59,28 @@ Seventeen tools across six categories, plus three MCP prompts.
 |------|-------------|
 | [`cedar_diff_schema`](#cedar_diff_schema) | Structural diff of two schemas with AVP-aware risk classification per change (safe/review/breaking) |
 | [`cedar_diff_policy_stores`](#cedar_diff_policy_stores) | Structural and optional behavioral diff between two policy stores with AVP immutability classification (embeds structured `schema_diff` from `cedar_diff_schema`) |
+
+---
+
+## Why use `cedar-mcp-server` instead of reading my Cedar files directly?
+
+A fair question, especially in an MCP client (Claude Code, Cursor) where the assistant can already Read the policy files in your workspace. If an LLM can read `policies/admin.cedar` and `schema.cedarschema`, why route through tool calls at all?
+
+Because the tools encode things that do not live in the files.
+
+**Validation.** `cedar_validate` and `cedar_validate_schema` run the official Cedar 4.11.0 parser. Reading a policy tells you what the author wrote, not whether the parser accepts it. Syntax errors, schema-type mismatches, missing-attribute references, optional-attribute access without a guard, and `appliesTo` violations all surface from the parser, not from text inspection. The parser is the only authority on validity.
+
+**Evaluation.** `cedar_authorize` and `cedar_authorize_batch` run the Cedar engine. Reading a policy set tells you the rules; running them tells you the decisions. The default-deny behavior, forbid-overrides-permit precedence, optional-attribute silent-skip, action-group membership resolution, schema-validated entity typing, and condition short-circuiting are engine semantics. You cannot simulate the engine accurately by mental execution over the policy text, especially when the entity graph has parents or shared attributes.
+
+**Planning.** `cedar_advise` returns a structured context bundle for any "I want to change my policies to do X" intent: schema summary, policy inventory with AST-classified Cedar pattern per file (Membership / Relationship / Discretionary / hybrid), intent-selected gotcha catalog (10 entries drawn from Cedar/AVP failure modes), AVP `UpdatePolicy` mutability rules, Cedar patterns reference, sequencing guidance, and explicit follow-up instructions. None of this lives in the policy files. AST-based pattern classification requires parsing each policy and walking the JSON; the AVP API contract requires knowing the `UpdatePolicy` spec; the gotcha catalog requires Cedar/AVP experience. The bundle is deterministic (no LLM round-trip on the server side); the calling assistant produces the actual plan from it and then verifies snippets via `cedar_validate` and `cedar_check_policy_change`.
+
+**Change safety.** `cedar_check_policy_change`, `cedar_diff_schema`, and `cedar_diff_policy_stores` encode the AVP `UpdatePolicy` contract and the rules of which schema changes break which policies. Visually diffing two policies in a code review tells you what text changed; only these tools tell you whether AVP will accept the update in place, whether the change will silently drop existing policy matches, or whether decisions will flip for canonical requests. A text diff over schemas does not tell you which attribute removals break which policy reads.
+
+**Analysis.** `cedar_explain` returns structure derived from the parsed AST: effect, scope breakdown, conditions, and detected patterns. Reading the policy gives the assistant a paraphrase; the AST gives ground truth (correct slot detection in templates, optional-attribute guard recognition, path-matching pattern detection, name-based identity recognition). For inherited policies that mix RBAC scope with ABAC conditions, the AST-derived breakdown is materially more reliable than text inspection.
+
+**Discoverability and sequencing.** `cedar_list_templates`, `cedar_list_template_links`, the `cedar://policies/{store}` and `cedar://entities/{store}` resource URIs, and the StoreManager-backed `policy_ref` / `schema_ref` / `entities_ref` parameters give the assistant a stable, schema-aware view of the project. Doing this through `ls` and `cat` works for one-off inspection, but the tools encode the store layout convention (`policies/`, `entities/`, `templates/`, `template-links/`, `schema.cedarschema` or `schema.json`) and surface only what the other tools will actually resolve.
+
+Rule of thumb for assistants: if a question is "what does this policy look like?", Read is fine. If it is "is this valid?", "would it allow X?", "can I update it in place?", "what changes if I deploy this?", "what's the safest way to add Y?", or "what patterns does this store use?", the right answer is a tool call. The tools are load-bearing for correctness, not a convenience layer.
 
 ---
 
@@ -510,46 +532,78 @@ Generates a complete authorization request payload that produces a target decisi
 
 ### `cedar_advise`
 
-Translates a natural-language description of an authorization intent into a step-by-step Cedar policy change plan. Uses MCP sampling, so the AI client handles the LLM call and pays for it.
+Returns a deterministic, structured context bundle for any "I want to change my Cedar policies to do X" intent. The bundle encodes the Cedar / AVP knowledge that does not live in the policy files: AVP `UpdatePolicy` mutability rules, AVP validation error categories, the 10-entry gotcha catalog (with the subset selected by the user's intent keywords), the Cedar patterns reference, AST-based pattern classification of every policy in the store, and explicit sequencing + follow-up guidance.
+
+The tool itself does not produce the plan. The calling assistant produces the plan from the bundle, then verifies each Cedar snippet with `cedar_validate` and each modification with `cedar_check_policy_change`. No MCP sampling, no client LLM round-trip on the server side.
+
+This pivot replaced the original sampling-based `cedar_advise` after dogfooding revealed two problems: (1) Claude Code does not advertise the MCP `sampling` capability, so the prior tool returned `-32601 Method not found`; (2) when the assistant fell back to drafting from file Read alone, it bypassed the server entirely and lost the AVP/gotcha grounding the server is supposed to provide. The bundle design defeats both.
 
 **Inputs:**
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `intent` | yes | Natural-language description of the desired authorization behavior |
-| `store_ref` | no | Store name or `cedar://` URI; provides the server with current schema and policy context |
-| `previous_plan` | no | A previous `cedar_advise` result; triggers delta output (unchanged/modified/added/removed steps) |
-| `format_preference` | no | `"structured"` (default) or `"narrative"`; hints the LLM at the desired output style |
+| `intent` | yes | Natural-language description of the desired authorization behavior, kept verbatim from the user |
+| `store_ref` | no | Store name or `cedar://` URI (e.g. `cedar://policies/production` or `production`); when supplied, the bundle includes `schema_summary`, `policy_inventory` with full policy text, and `patterns_detected_in_store` counts grounded in the actual store |
 
-**Output shape (full plan):**
+**Output shape (abridged):**
 
 ```json
 {
-  "intent_interpretation": "Allow contractor principals to read documents classified as external_share.",
-  "applicable_cedar_pattern": "Membership (RBAC) with attribute condition",
-  "affected_entities": {
-    "principal_type": "DocMgmt::Role",
-    "action_ids": ["read"],
-    "resource_type": "DocMgmt::Document"
+  "tool": "cedar_advise",
+  "bundle_version": "v2",
+  "intent": "Only users with verified email should read documents; editors and viewers affected, admins exempt",
+  "store_name": "production",
+  "store_status": "loaded",
+  "schema_summary": {
+    "valid": true,
+    "format": "cedarschema",
+    "namespaces": ["DocMgmt"],
+    "entity_type_count": 4,
+    "action_count": 3,
+    "raw_text": "namespace DocMgmt { ... }"
   },
-  "required_changes": [
+  "policy_inventory": [
     {
-      "step": 1,
-      "type": "policy_new",
-      "description": "Create a new permit policy for the contractor role",
-      "cedar_snippet": "permit (\n  principal in DocMgmt::Role::\"contractor\",\n  action == DocMgmt::Action::\"read\",\n  resource\n)\nwhen { resource.classification == \"external_share\" };",
-      "avp_update_mode": "new_policy_via_create_policy",
-      "avp_consideration": "Use CreatePolicy with a static policy body."
+      "policy_id": "admin",
+      "pattern": "membership",
+      "pattern_confidence": "high",
+      "summary": "admin (permit, principal scope uses 'in' — group/role membership (RBAC))",
+      "policy_text": "permit(principal in DocMgmt::Role::\"admin\", action, resource);"
     }
   ],
-  "gotchas": [...],
-  "verification_next_steps": "Validate the new policy against the schema, then run cedar_authorize with a contractor principal and a document with classification=external_share."
+  "patterns_detected_in_store": [{ "pattern": "membership", "count": 3 }],
+  "applicable_gotchas": [
+    {
+      "id": "optional_attribute_guard",
+      "severity": "high",
+      "description": "Optional schema attributes MUST be guarded with `entity has attr` before access...",
+      "avp_error_category": "UnsafeOptionalAttributeAccess"
+    }
+  ],
+  "avp_update_policy_rules": {
+    "summary": "...",
+    "in_place_via_update_policy": ["Action scope", "When/unless conditions", "Policy name"],
+    "requires_delete_recreate": ["Effect", "Principal scope", "Resource scope", "Static ↔ template-linked conversion"],
+    "new_via_create_policy": ["Wholly new policy"],
+    "notes": ["UpdatePolicy only updates STATIC policies..."]
+  },
+  "avp_validation_error_catalog": [
+    { "id": "UnsafeOptionalAttributeAccess", "description": "..." }
+  ],
+  "cedar_patterns_reference": {
+    "summary": "...",
+    "patterns": [
+      { "name": "Membership (RBAC)", "description": "...", "example": "..." }
+    ]
+  },
+  "sequencing_guidance": [
+    "Schema changes that add new entity types, attributes, or actions MUST be deployed BEFORE policies that reference them..."
+  ],
+  "next_steps_for_llm": "Use this context to produce a Cedar policy change plan. Do not skip these steps: 1. Identify the entity types... 6. After drafting Cedar snippets, call cedar_validate on each... 7. For each modification to an existing policy, call cedar_check_policy_change..."
 }
 ```
 
-**Note:** `cedar_advise` requires an MCP client that supports sampling (e.g. Claude Code, Claude Desktop). Clients that don't support sampling will receive an error. LLM-generated Cedar snippets in the plan are validated before return; any snippets that fail to parse are surfaced as high-severity gotchas rather than passed through silently.
-
-**When to use:** starting a policy design from scratch, translating a business requirement into Cedar, or iteratively refining a plan by passing the previous plan back as `previous_plan`.
+**When to use:** at the start of any policy-change conversation, before recommending any Cedar snippet. Call this once per intent; iterate the plan in conversation rather than re-calling for small refinements (the bundle is the same for a given intent + store).
 
 ---
 
