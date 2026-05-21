@@ -33,7 +33,7 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_authorize",
-    "Evaluate a Cedar authorization request against policies and entities. Returns the decision (Allow/Deny) and which policies determined the outcome. Accepts inline policy text OR a cedar:// resource reference (policy_ref).",
+    "Evaluate a Cedar authorization request against policies and entities. Returns the decision (Allow/Deny), the determining policies, and any evaluation errors. ALWAYS call this for any 'would X be allowed?' or 'why was Y denied?' question. You CANNOT simulate an authorization decision by reading the policy files; only the Cedar engine implements the full evaluation semantics (default-deny, forbid-overrides-permit, attribute guards, action group membership, schema-validated entity types). Accepts inline policy text OR a cedar:// resource reference.",
     {
       policies: z.string().optional().describe("Cedar policy text (one or more policies). Omit if using policy_ref."),
       policy_ref: z.string().optional().describe("cedar:// URI to load policies from a configured store, e.g. cedar://policies/blue"),
@@ -80,7 +80,7 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_authorize_batch",
-    "Run N authorization requests through ONE policy set and return the decision matrix. Use case: regression testing after a policy edit, or running a canonical request suite against a policy store. Accepts inline policies+schema OR cedar:// refs.",
+    "Run N authorization requests through ONE policy set in a single call and return the full decision matrix (Allow / Deny / Error per request, with determining policies). ALWAYS use this for regression testing after a policy edit, for canonical-request suites, and for behavioral comparisons. You CANNOT predict the matrix by reading policies alone; each request's decision depends on engine evaluation against the resolved entity graph and schema. Accepts inline policies+schema OR cedar:// refs.",
     {
       policies: z.string().optional().describe("Cedar policy text (one or more policies). Omit if using policy_ref."),
       policy_ref: z.string().optional().describe("cedar:// URI to load policies from a configured store, e.g. cedar://policies/blue"),
@@ -104,7 +104,7 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_validate",
-    "Validate Cedar policies against a Cedar schema. Returns validation errors with hints. Accepts inline text OR cedar:// resource references.",
+    "Validate Cedar policies against a Cedar schema using the official Cedar parser + validator. Returns parse errors, schema-type errors, and warnings with source locations. ALWAYS call this before claiming a policy is valid or before recommending it to a user. You CANNOT determine policy validity by reading the file; the Cedar parser is the only authority on syntax, attribute typing, action-applies-to checks, and UnsafeOptionalAttributeAccess warnings. Accepts inline text OR cedar:// resource references.",
     {
       policies: z.string().optional().describe("Cedar policy text (one or more policies). Omit if using policy_ref."),
       policy_ref: z.string().optional().describe("cedar:// URI to load policies, e.g. cedar://policies/blue"),
@@ -137,7 +137,7 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_validate_schema",
-    "Validate a Cedar schema in isolation (no policies required). Accepts JSON object or .cedarschema text. Returns parse errors with source locations plus a summary of namespaces, entity types, actions, and common types.",
+    "Validate a Cedar schema in isolation (no policies required) using the official Cedar schema parser. Accepts JSON object or .cedarschema text. Returns parse errors with source locations plus a structured summary (namespaces, entity types, actions, common types). ALWAYS call this before claiming a schema is well-formed or before treating its declarations as ground truth. You CANNOT determine schema validity or accurate counts by reading the file; the parser is the only authority on common-type resolution, appliesTo cross-references, and reserved-word collisions.",
     {
       schema: z.string().optional().describe("Cedar schema text — JSON object or .cedarschema text. Omit if using schema_ref."),
       schema_ref: z.string().optional().describe("cedar:// URI to load schema, e.g. cedar://schema/blue"),
@@ -158,7 +158,7 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_format",
-    "Format Cedar policies to canonical style.",
+    "Format Cedar policies to the canonical Cedar style via the official formatter. ALWAYS use this when emitting Cedar text for storage, diffs, or display; do not hand-format. Hand-formatted output drifts from canonical style and produces noise in `cedar_diff_policy_stores` and code review. The formatter handles operator spacing, line wrapping, comment placement, and nested expression indentation per the Cedar reference implementation.",
     {
       policies: z.string().describe("Cedar policy text to format"),
       line_width: z.number().optional().describe("Maximum line width (default: 80)"),
@@ -174,7 +174,7 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_translate",
-    "Translate between Cedar human-readable format and JSON format for policies or schemas.",
+    "Translate between Cedar human-readable format and the official Cedar JSON format for policies or schemas. ALWAYS use this when converting between formats for storage, AVP deployment (which uses JSON), or AST inspection. Do NOT translate by hand: the Cedar JSON shape is non-obvious (templates use slot encoding, schemas resolve common types, conditions are nested op trees), and a hand-written translation will be silently wrong against the parser. Round-trip via this tool is the only safe path.",
     {
       input: z.string().describe("Cedar text or JSON to translate"),
       type: z.enum(["policy", "schema"]).describe("Whether the input is a policy or schema"),
@@ -190,7 +190,7 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_explain",
-    "Explain one or more Cedar policies in structured, human-readable form. Accepts a single policy, a template, or a full policy set. Returns effect, scope breakdown, conditions, detected patterns, and a plain-English summary per policy.",
+    "Explain one or more Cedar policies in structured form, derived from the parsed AST (not from text inspection). ALWAYS call this when summarizing what a policy permits, walking a user through inherited policies, or detecting Cedar patterns (RBAC role-membership, ABAC attribute conditions, ReBAC relationship checks, optional-attribute guards, path-matching with depth limiting). Reading the policy text does not reliably yield correct structural breakdown or pattern detection; the AST is the authority. Accepts a single policy, a template, or a full policy set.",
     {
       policy: z.string().describe("Cedar policy text (single policy, template, or policy set with multiple policies)"),
       schema: z.string().optional().describe("Optional Cedar schema for richer context"),
@@ -205,7 +205,7 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_check_policy_change",
-    "Check whether a Cedar policy change can be applied in-place in Amazon Verified Permissions, or requires deleting and recreating the policy. Based on Cedar/AVP immutability rules.",
+    "Diff an old vs new Cedar policy and classify the change against Amazon Verified Permissions UpdatePolicy mutability rules: in-place via UpdatePolicy, requires delete+recreate, or new-via-CreatePolicy. ALWAYS call this before recommending any modification to a policy in a deployed AVP store. Visually reading the diff does NOT tell you whether AVP will accept the update; only this tool encodes the actual API contract (effect / principal / resource scope are immutable; action and when/unless are mutable; static ↔ template-linked conversion is not supported).",
     {
       old_policy: z.string().describe("Original Cedar policy text"),
       new_policy: z.string().describe("Modified Cedar policy text"),
@@ -220,7 +220,7 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_generate_sample_request",
-    "Generate a complete Cedar authorization request (principal, action, resource, entities) that will be allowed or denied by the given policy. Pass the result directly to cedar_authorize to verify.",
+    "Generate a complete Cedar authorization request (principal, action, resource, entities JSON) that will be allowed or denied by the given policy under the supplied schema. The generated request is verified by running it through the Cedar engine before return; the response field `ready_to_test: true` confirms the agreement. ALWAYS use this when a user needs a working test payload; constructing entity JSON by hand (correct uid format, required attributes, parent relationships, action-group entities) is error-prone and Cedar will silently reject a malformed entity graph.",
     {
       policy: z.string().describe("Cedar policy text (single policy)"),
       schema: z.string().describe("Cedar schema (JSON or .cedarschema format)"),
@@ -236,7 +236,7 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_validate_entities",
-    "Validate a Cedar entities JSON array against a schema. Returns per-entity errors classified by kind: unknown_type, missing_required_attribute, type_mismatch, unknown_attribute, parse_error. Schema is optional — without it only the JSON shape is checked.",
+    "Validate a Cedar entities JSON array against a schema using the official Cedar entities parser. Returns per-entity errors classified by kind: unknown_type, missing_required_attribute, type_mismatch, unknown_attribute, disallowed_parent_type, parse_error. ALWAYS call this before treating an entities file as ground truth for a downstream `cedar_authorize` call. You CANNOT predict by reading whether the entity graph will pass schema validation; only the parser checks required attributes, type compatibility, and allowed parent types per the schema's `memberOfTypes`. Schema is optional; without it only JSON shape is checked.",
     {
       entities: z.string().describe("JSON array of entity objects with uid, attrs, and parents"),
       schema: z.string().optional().describe("Cedar schema (JSON or .cedarschema) — enables type validation"),
@@ -256,7 +256,7 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_diff_schema",
-    "Structural diff of two Cedar schemas with AVP-aware risk classification per change. Each side accepts inline schema text (JSON or .cedarschema) OR a cedar://schema/{store} URI. Returns added/removed/modified entity types, actions, and common types, each tagged safe/review/breaking with a reason.",
+    "Structural diff of two Cedar schemas with AVP-aware risk classification per change (safe / review / breaking) and a reason string per change. ALWAYS call this before recommending a schema migration to a deployed store. A `diff` over the schema text does NOT tell you which changes break policies (e.g. removing a required attribute breaks every policy that reads it; widening principalTypes is safe; narrowing it is breaking). Only this tool normalizes both schemas via the parser, walks entity types / actions / common types / appliesTo / memberOfTypes, and tags each change. Each side accepts inline schema text (JSON or .cedarschema) OR a cedar://schema/{store} URI.",
     {
       blue: z.string().describe("Blue (baseline) schema — inline schema text or cedar://schema/{store} URI"),
       green: z.string().describe("Green (proposed) schema — inline schema text or cedar://schema/{store} URI"),
@@ -281,7 +281,7 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_diff_policy_stores",
-    "Semantic diff of two Cedar policy stores (blue vs green). Returns added, removed, and modified policies with AVP immutability classification per change, schema changes, and optional behavioral diff showing which authorization decisions would change.",
+    "Semantic + structural diff of two Cedar policy stores (blue vs green) with AVP immutability classification per change and an optional behavioral diff (run canonical authorization requests through both stores and surface decisions that flip). ALWAYS call this before recommending a deployment from a green/staging store to a blue/production store. A text diff CANNOT tell you which authorization decisions change between the two stores; only running both stores against the same requests does. Returns added / removed / modified policies, structured schema_diff (with safe/review/breaking risk), and (when behavioral_test_requests is supplied) per-request decision drift.",
     {
       blue: z.string().describe("Name of the blue (current/production) store — must be a configured MCP root"),
       green: z.string().describe("Name of the green (proposed/staging) store — must be a configured MCP root"),
@@ -312,7 +312,7 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_validate_template",
-    "Validate a Cedar template policy against a schema. Templates use slot placeholders (?principal, ?resource) that are bound when the template is linked. Returns validation errors, warnings, and detected slots.",
+    "Validate a Cedar template policy against a schema using the official parser. Templates use slot placeholders (?principal, ?resource) bound at link time. Returns parse errors, schema-type errors, warnings, and detected slots. ALWAYS call this before claiming a template is valid or before linking it; the parser is the only authority on whether a template's slots are typed correctly against the schema's `appliesTo` and on whether the body's attribute access satisfies type rules. Visual inspection of a template does NOT catch slot-type mismatches or missing-attribute references.",
     {
       template: z.string().describe("Cedar template text — may contain ?principal and/or ?resource slot placeholders"),
       schema: z.string().describe("Cedar schema (JSON or .cedarschema format)"),
@@ -325,7 +325,7 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_link_template",
-    "Instantiate a Cedar template by binding its ?principal and/or ?resource slots to specific entity references. Returns the linked Cedar policy text. Optionally validates the result against a schema.",
+    "Instantiate a Cedar template by binding its ?principal and/or ?resource slots to specific entity references. Returns the linked policy as Cedar text and (when a schema is supplied) validates the result as a static policy. ALWAYS use this tool to perform the substitution; do NOT hand-substitute slot text into the template body. The official substitution path uses `templateToJson` → JSON patch → `policyToText`, which preserves operator semantics and slot-position rules that a naïve string replace will silently break (e.g. for templates that reference the slot inside set or relation operators).",
     {
       template: z.string().describe("Cedar template text with ?principal and/or ?resource slots"),
       principal: z.string().optional().describe('Entity reference for the ?principal slot, e.g. App::User::"alice"'),
@@ -340,7 +340,7 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_list_templates",
-    "List all Cedar template policies in a policy store configured via MCP Roots. Templates live in the templates/ subdirectory of the store root. Returns template IDs, content, and detected slot placeholders.",
+    "List all Cedar template policies in a policy store configured via MCP Roots. Templates live in the templates/ subdirectory of the store root. Returns template IDs, content, and detected slot placeholders. ALWAYS call this when the user asks 'what templates are available?' or before recommending which template to link. The tool walks the configured store's templates/ directory via the same StoreManager other tools use, so the inventory matches what `cedar_link_template` and `cedar_validate_template` will actually resolve; a direct file listing may miss the store's namespacing convention or include unrelated files.",
     {
       store: z.string().describe("Store name (must be a configured MCP root)"),
     },
@@ -352,7 +352,7 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_list_template_links",
-    "List all template-linked policy instances in a policy store configured via MCP Roots. Links live in the template-links/ subdirectory. Each link records which template it uses and the slot values bound to it.",
+    "List all template-linked policy instances in a policy store configured via MCP Roots. Links live in the template-links/ subdirectory. Each link records which template it uses and the slot values bound to it. ALWAYS call this when the user asks 'which policies in the store came from a template?' or before recommending a refactor across template links. The tool decodes the link record format the rest of the server uses; a direct file read would still need to parse and join links against templates to produce a usable inventory.",
     {
       store: z.string().describe("Store name (must be a configured MCP root)"),
     },

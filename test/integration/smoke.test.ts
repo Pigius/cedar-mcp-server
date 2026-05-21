@@ -206,4 +206,25 @@ describe("integration smoke", () => {
     expect(result.decision).toBe("Allow");
     expect(result.determining_policies).toHaveLength(1);
   }, 15_000);
+
+  it("S4 — every tool description is non-trivially long and asserts necessity (MUST/ALWAYS/CANNOT/INSUFFICIENT)", async () => {
+    const conn = makeClient();
+    client = conn.client;
+    transport = conn.transport;
+    await client.connect(transport);
+
+    const { tools } = await client.listTools();
+    const necessityMarker = /\b(ALWAYS|MUST|CANNOT|INSUFFICIENT|do NOT|Do NOT)\b/;
+    const failures: string[] = [];
+    for (const tool of tools) {
+      const desc = tool.description ?? "";
+      if (desc.length <= 100) {
+        failures.push(`${tool.name}: description too short (${desc.length} chars)`);
+      }
+      if (!necessityMarker.test(desc)) {
+        failures.push(`${tool.name}: no necessity marker (MUST/ALWAYS/CANNOT/INSUFFICIENT/do NOT) in description`);
+      }
+    }
+    expect(failures, failures.join("\n")).toEqual([]);
+  }, 15_000);
 });
