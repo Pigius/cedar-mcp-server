@@ -65,15 +65,29 @@ function countPolicies(policiesText: string): number {
   return parts.policies.length + parts.policy_templates.length;
 }
 
-/** Convert a byte offset into the source text into 1-indexed line + column. */
-function offsetToLineCol(source: string, offset: number): { line: number; column: number } {
-  if (offset < 0 || offset > source.length) {
+/**
+ * Convert a WASM-reported UTF-8 byte offset into the source text into a
+ * 1-indexed line + Unicode-code-point column. Walking the JS string as if
+ * the offset were a char index drifts whenever the source contains
+ * multi-byte UTF-8 chars (em-dashes in comments, non-ASCII identifiers
+ * in string literals). This matters in practice for any Cedar policy
+ * with non-ASCII content, including comments, before the error site.
+ *
+ * Implementation: encode the full source to bytes, slice up to the
+ * byte offset, decode back to a string, then count Unicode code points
+ * (via for-of, which iterates code points rather than UTF-16 code units).
+ */
+function offsetToLineCol(source: string, byteOffset: number): { line: number; column: number } {
+  const enc = new TextEncoder();
+  const bytes = enc.encode(source);
+  if (byteOffset < 0 || byteOffset > bytes.length) {
     return { line: 1, column: 1 };
   }
+  const before = new TextDecoder().decode(bytes.slice(0, byteOffset));
   let line = 1;
   let column = 1;
-  for (let i = 0; i < offset; i++) {
-    if (source.charCodeAt(i) === 10 /* \n */) {
+  for (const ch of before) {
+    if (ch === "\n") {
       line++;
       column = 1;
     } else {

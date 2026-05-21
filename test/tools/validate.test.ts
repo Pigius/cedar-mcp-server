@@ -70,6 +70,24 @@ describe("cedar_validate — M2 line/column on parse errors", () => {
     expect(result.errors[0]!.line).toBe(1);
     expect(result.errors[0]!.column).toBeGreaterThan(0);
   });
+
+  it("reports correct column when a multi-byte UTF-8 char (em-dash) appears before the error", async () => {
+    // Post-audit regression: WASM reports UTF-8 byte offsets; naive walking
+    // as JS-string char indexes drifts on multi-byte chars. The em-dash on
+    // line 1 is 3 bytes / 1 code point. The `int` typo on line 4 starts at
+    // 1-indexed column 10. A byte-counted column would report 12.
+    const bad = `// comment with em—dash
+permit (
+  principal,
+  action int [DocMgmt::Action::"READ"],
+  resource
+);`;
+    const result = await handleValidate({ policies: bad, schema: SCHEMA_STR });
+
+    expect(result.valid).toBe(false);
+    expect(result.errors[0]!.line).toBe(4);
+    expect(result.errors[0]!.column).toBe(10);
+  });
 });
 
 describe("cedar_validate — M1 hint for common typos", () => {
