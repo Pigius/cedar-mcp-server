@@ -309,13 +309,32 @@ unless { principal in App::Role::"admin" };`;
     ]);
     const result = parseToolResult(
       await client!.callTool({ name: "cedar_authorize_batch", arguments: { policies: policy, schema, requests } })
-    ) as { total: number; allowed: number; denied: number; errored: number; decisions: Array<{ index: number; decision: string }> };
+    ) as {
+      total: number;
+      allowed: number;
+      denied: number;
+      errored: number;
+      decisions: Array<{ index: number; principal: string; action: string; resource: string; decision: string }>;
+    };
 
     expect(result.total).toBe(3);
     expect(result.allowed).toBe(1);
     expect(result.denied + result.errored).toBe(2);  // bob denies; carol errors
-    expect(result.decisions[0]?.decision).toBe("Allow");
-    expect(result.decisions[2]?.decision).toBe("Error");
+
+    // Order invariant: decisions[i] MUST correspond to request[i]. A batch that
+    // parallelized and returned results out-of-order would still pass a loose
+    // "outcomes match the multiset" check, hiding the bug. Assert position +
+    // principal + action + resource per index.
+    expect(result.decisions).toHaveLength(3);
+    expect(result.decisions[0]!.index).toBe(0);
+    expect(result.decisions[0]!.principal).toBe('App::User::"alice"');
+    expect(result.decisions[0]!.decision).toBe("Allow");
+    expect(result.decisions[1]!.index).toBe(1);
+    expect(result.decisions[1]!.principal).toBe('App::User::"bob"');
+    expect(result.decisions[1]!.decision).toBe("Deny");
+    expect(result.decisions[2]!.index).toBe(2);
+    expect(result.decisions[2]!.principal).toBe('App::User::"carol"');
+    expect(result.decisions[2]!.decision).toBe("Error");
   }, 30_000);
 
   it("EC11 — policy_count handles 100 policies in a single text block", async () => {

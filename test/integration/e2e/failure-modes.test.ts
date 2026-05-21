@@ -228,34 +228,39 @@ describe("e2e failure modes", () => {
     expect(result.valid).toBe(true);
   }, 30_000);
 
-  it("F11 — rapid-fire concurrent calls don't race or interleave responses", async () => {
-    // Bad situation: 8 concurrent calls launched in parallel. The MCP transport
-    // must route each response to its correct request ID. Failure case: a race
-    // in response correlation that swaps results between callers, leaving one
-    // promise resolved with another's answer.
+  it("F11 — in-flight requests get their own correlated responses (stdio ID routing)", async () => {
+    // What this actually tests: stdio MCP is wire-serial (JSON-RPC over stdin/stdout
+    // is fundamentally one message at a time), but the server can have multiple
+    // in-flight Promises waiting on WASM calls. The MCP transport correlates each
+    // response to its request ID. Failure case: a server that mismanages its
+    // pending-response queue could resolve one caller's promise with another's
+    // result. We launch 8 requests via Promise.all and assert each is identified
+    // by its own role-${i} policy text in the result.
+    //
+    // True transport-level concurrency (multiple TCP connections / Mcp-Session-Id
+    // routing) lives in http-smoke.test.ts H6 — see that test for the parallel-
+    // sessions case.
     const calls = Array.from({ length: 8 }, (_, i) =>
       client!.callTool({
-        name: "cedar_validate",
+        name: "cedar_explain",
         arguments: {
-          policies: `permit (principal in App::Role::"role-${i}", action, resource);`,
-          schema: JSON.stringify({
-            App: {
-              entityTypes: {
-                User: { memberOfTypes: ["Role"], shape: { type: "Record", attributes: {} } },
-                Role: { memberOfTypes: [], shape: { type: "Record", attributes: {} } },
-                Doc: { memberOfTypes: [], shape: { type: "Record", attributes: {} } },
-              },
-              actions: { read: { appliesTo: { principalTypes: ["User"], resourceTypes: ["Doc"], context: { type: "Record", attributes: {} } } } },
-            },
-          }),
+          policy: `permit (principal in App::Role::"role-${i}", action, resource);`,
         },
       })
     );
     const results = await Promise.all(calls);
-    // All should be valid (each has a distinct, well-formed permit)
     for (let i = 0; i < results.length; i++) {
-      const parsed = parseToolResult(results[i]!) as { valid: boolean };
-      expect(parsed.valid, `call ${i}`).toBe(true);
+      const parsed = parseToolResult(results[i]!) as {
+        policies?: Array<{ summary?: string; cedar_text?: string }>;
+        cedar_text?: string;
+        summary?: string;
+      };
+      // cedar_explain returns either a single result or { policies: [...] }.
+      // The role-${i} string from the source policy must round-trip into the
+      // result body — if response routing swapped two callers, the i-th result
+      // would contain role-${j} (j ≠ i).
+      const body = JSON.stringify(parsed);
+      expect(body, `call ${i} response`).toContain(`role-${i}`);
     }
   }, 60_000);
 });

@@ -283,4 +283,54 @@ describe("cedar_generate_sample_request", () => {
     expect(result.decision).toBe("Deny");
     expect(result.ready_to_test).toBe(true);
   });
+
+  it("picks an action whose appliesTo matches the scope's principal type, not just the first declared action", async () => {
+    // Regression for the v1 → v2 fix of defaultActionIdFromSchema. v1 returned
+    // Object.keys(actions)[0], which broke when the first action's
+    // appliesTo.principalTypes didn't include the policy's principal type.
+    //
+    // Failure case: schema with `adminOnly` declared FIRST (admins only) and
+    // `userRead` declared second (users only). A policy targeting a User would
+    // pick `adminOnly` under v1, schema validation rejects, generator outputs
+    // ready_to_test:false. Under v2 the generator picks `userRead`.
+    const schemaWithOrder = JSON.stringify({
+      Mismatch: {
+        entityTypes: {
+          User: { memberOfTypes: [], shape: { type: "Record", attributes: { name: { type: "String", required: true } } } },
+          Admin: { memberOfTypes: [], shape: { type: "Record", attributes: { name: { type: "String", required: true } } } },
+          Doc: { memberOfTypes: [], shape: { type: "Record", attributes: {} } },
+        },
+        actions: {
+          adminOnly: { appliesTo: { principalTypes: ["Admin"], resourceTypes: ["Doc"], context: { type: "Record", attributes: {} } } },
+          userRead: { appliesTo: { principalTypes: ["User"], resourceTypes: ["Doc"], context: { type: "Record", attributes: {} } } },
+        },
+      },
+    });
+    // Policy with NO action restriction — generator must default-pick an action.
+    // The principal is a User (per generator's principalType picked from the
+    // userRead action), so v2 should select `userRead`, not `adminOnly`.
+    const policy = `permit (principal, action, resource);`;
+    // Wait — extractScope picks principalType from the FIRST action's appliesTo
+    // when actionId is undefined (see entityTypesFromSchema fallback). That
+    // returns "Admin" (first action's principal type). So the generator would
+    // build a request as Admin + adminOnly. Both pieces agree but the v2 fix
+    // doesn't yet help because the principal type is also derived from the
+    // first action.
+    //
+    // To exercise the v2 fix specifically, use a policy that PINS the principal
+    // type (via `principal == User::"x"`) but leaves action unrestricted.
+    const pinnedPolicy = `permit (principal == Mismatch::User::"alice", action, resource);`;
+
+    const result = await handleGenerateSample({
+      policy: pinnedPolicy,
+      schema: schemaWithOrder,
+      target_decision: "allow",
+    });
+
+    expect(result.error).toBeUndefined();
+    // The generated action must match the User principal. adminOnly does NOT
+    // include User in its appliesTo; userRead does. v2 must pick userRead.
+    expect(result.action).toBe('Mismatch::Action::"userRead"');
+    void policy;  // kept above as a written-out exploration; not used
+  });
 });

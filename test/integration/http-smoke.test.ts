@@ -15,6 +15,9 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createServer as createNetServer } from "node:net";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { startHttpServer, type RunningHttpServer } from "../../src/http-server.js";
@@ -194,6 +197,75 @@ describe("integration HTTP smoke", () => {
     expect(body).toMatchObject({ status: "ok", transport: "streamable-http", mode: "stateful" });
   });
 
+  it("H6 — three concurrent sessions don't interfere; each gets correct correlated responses", async () => {
+    // True transport-level concurrency: three independent Clients, each with its
+    // own Mcp-Session-Id from the server's stateful sessionIdGenerator, hitting
+    // the HTTP endpoint in parallel via Promise.all. Failure case: session
+    // routing mixes responses between sessions, or shared transport state across
+    // sessions corrupts the message history. The stdio F11 test in failure-modes
+    // covers ID routing within a single session; this test covers ID routing
+    // ACROSS sessions, which only HTTP supports.
+
+    const clients = [0, 1, 2].map(() => new Client(
+      { name: "http-smoke-concurrent", version: "1.0.0" },
+      { capabilities: {} }
+    ));
+    const transports = [0, 1, 2].map(() => new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`)));
+
+    try {
+      // Connect all three in parallel
+      await Promise.all(clients.map((c, i) => c.connect(transports[i]!)));
+
+      // Each client identifies its request via a unique role name in the policy.
+      // If session routing mixed responses, client[i] would receive role-${j}
+      // (j ≠ i) in its response body.
+      const calls = clients.map((c, i) =>
+        c.callTool({
+          name: "cedar_explain",
+          arguments: {
+            policy: `permit (principal in DocMgmt::Role::"role-session-${i}", action, resource);`,
+          },
+        })
+      );
+      const results = await Promise.all(calls);
+
+      for (let i = 0; i < results.length; i++) {
+        const parsed = parseToolResult(results[i]!);
+        const body = JSON.stringify(parsed);
+        expect(body, `session ${i} response`).toContain(`role-session-${i}`);
+      }
+    } finally {
+      await Promise.all(clients.map((c) => c.close().catch(() => {})));
+    }
+  }, 30_000);
+
+  it("H7 — schema_ref via cedar:// URI does NOT resolve in HTTP mode without --root configured", async () => {
+    // Sanity: without --root flags, the storeManager has no stores. A client
+    // passing schema_ref: "cedar://schema/anything" should get a clean error,
+    // not a hang or a crash. This documents the boundary between the default
+    // HTTP server (no roots) and the configured HTTP deployment (with roots,
+    // covered by the H-ROOT suite below).
+    const client = new Client({ name: "http-no-roots", version: "1.0.0" }, { capabilities: {} });
+    const transport = new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`));
+    await client.connect(transport);
+
+    try {
+      const raw = await client.callTool({
+        name: "cedar_validate",
+        arguments: {
+          policies: ADMIN_POLICY,
+          schema_ref: "cedar://schema/nonexistent",
+        },
+      });
+      const result = raw as { content: Array<{ type: string; text?: string }> };
+      const textBlock = result.content.find((b) => b.type === "text");
+      const parsed = JSON.parse(textBlock!.text!);
+      expect(parsed.error).toBeDefined();
+    } finally {
+      await client.close();
+    }
+  }, 15_000);
+
   it("H5 — malformed JSON-RPC body returns a structured error, not a crash", async () => {
     // Send a payload that's syntactically valid JSON but not valid JSON-RPC.
     // The transport must respond with a structured error (HTTP 400/422 or a
@@ -213,4 +285,163 @@ describe("integration HTTP smoke", () => {
     // Don't assert on exact shape — different MCP SDK versions structure the error differently.
     // Key invariant: no server crash, and a response was returned.
   });
+});
+
+/**
+ * H-ROOT suite — exercises the actual deployment path the peer review called
+ * out: cedar-mcp-server --http <port> --root name=path. Without this, the
+ * other HTTP smoke tests pass without ever invoking the cedar:// resolution
+ * path that real deployments depend on. Closes the gap.
+ */
+describe("integration HTTP smoke — with --root configured", () => {
+  let running: RunningHttpServer;
+  let baseUrl: string;
+  let storeDir: string;
+
+  const STORE_SCHEMA = `namespace DocMgmt {
+  entity User in [Role] = { name: String, email: String };
+  entity Role;
+  entity Document in [Folder] = { owner: String, classification: String };
+  entity Folder;
+  action read appliesTo {
+    principal: [User],
+    resource: [Document]
+  };
+}`.trim();
+
+  const STORE_ADMIN_POLICY = `permit (
+  principal in DocMgmt::Role::"admin",
+  action,
+  resource
+);`;
+
+  const STORE_ENTITIES_FILE = JSON.stringify([
+    { uid: { type: "DocMgmt::User", id: "alice" }, attrs: { name: "Alice", email: "a@b.c" }, parents: [{ type: "DocMgmt::Role", id: "admin" }] },
+    { uid: { type: "DocMgmt::Role", id: "admin" }, attrs: {}, parents: [] },
+    { uid: { type: "DocMgmt::Document", id: "doc-public" }, attrs: { owner: "alice", classification: "public" }, parents: [{ type: "DocMgmt::Folder", id: "shared" }] },
+    { uid: { type: "DocMgmt::Folder", id: "shared" }, attrs: {}, parents: [] },
+  ]);
+
+  beforeAll(async () => {
+    // Build a real on-disk policy store
+    storeDir = mkdtempSync(join(tmpdir(), "cedar-mcp-http-root-"));
+    mkdirSync(join(storeDir, "policies"), { recursive: true });
+    mkdirSync(join(storeDir, "entities"), { recursive: true });
+    writeFileSync(join(storeDir, "policies", "admin.cedar"), STORE_ADMIN_POLICY);
+    writeFileSync(join(storeDir, "schema.cedarschema"), STORE_SCHEMA);
+    writeFileSync(join(storeDir, "entities", "alice-and-docs.json"), STORE_ENTITIES_FILE);
+
+    const port = await getFreePort();
+    running = await startHttpServer({
+      port,
+      host: "127.0.0.1",
+      roots: [{ name: "test-store", path: storeDir }],
+    });
+    baseUrl = `http://127.0.0.1:${port}`;
+  }, 30_000);
+
+  afterAll(async () => {
+    if (running) await running.close();
+    if (storeDir) {
+      try { rmSync(storeDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
+  it("HR1 — cedar://policies/test-store resolves all .cedar files through HTTP", async () => {
+    // The deployment path: a client passes policy_ref instead of inlining
+    // policy text. The HTTP server resolves the URI via the deployer-configured
+    // store. Without this test, the entire "shared remote MCP for a team"
+    // value prop was untested over HTTP.
+    const client = new Client({ name: "http-root", version: "1.0.0" }, { capabilities: {} });
+    const transport = new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`));
+    await client.connect(transport);
+
+    try {
+      const raw = await client.callTool({
+        name: "cedar_validate",
+        arguments: {
+          policy_ref: "cedar://policies/test-store",
+          schema_ref: "cedar://schema/test-store",
+        },
+      });
+      const result = raw as { content: Array<{ type: string; text?: string }> };
+      const parsed = JSON.parse(result.content.find((b) => b.type === "text")!.text!) as { valid: boolean; policy_count: number };
+      expect(parsed.valid).toBe(true);
+      expect(parsed.policy_count).toBe(1);
+    } finally {
+      await client.close();
+    }
+  }, 20_000);
+
+  it("HR2 — cedar://entities/test-store + cedar_authorize via entities_ref returns Allow", async () => {
+    // The entities_ref path. Even reading a single file (alice-and-docs.json)
+    // via cedar://entities/test-store/alice-and-docs is non-trivial — it
+    // exercises the store's listEntities/readEntities pair through the HTTP
+    // transport, then routes the resolved content into the authorize call.
+    const client = new Client({ name: "http-root-auth", version: "1.0.0" }, { capabilities: {} });
+    const transport = new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`));
+    await client.connect(transport);
+
+    try {
+      const raw = await client.callTool({
+        name: "cedar_authorize",
+        arguments: {
+          policy_ref: "cedar://policies/test-store",
+          schema_ref: "cedar://schema/test-store",
+          entities_ref: "cedar://entities/test-store",
+          principal: 'DocMgmt::User::"alice"',
+          action: 'DocMgmt::Action::"read"',
+          resource: 'DocMgmt::Document::"doc-public"',
+        },
+      });
+      const result = raw as { content: Array<{ type: string; text?: string }> };
+      const parsed = JSON.parse(result.content.find((b) => b.type === "text")!.text!) as { decision: string };
+      expect(parsed.decision).toBe("Allow");
+    } finally {
+      await client.close();
+    }
+  }, 20_000);
+
+  it("HR3 — cedar://policies/{store}/{id} resolves a single file by id", async () => {
+    // The fine-grained resolution path. Failure case: a resolver that requires
+    // store-level listing would fail when given an id-specific URI, or vice
+    // versa. This proves both granularities work through HTTP.
+    const client = new Client({ name: "http-root-single", version: "1.0.0" }, { capabilities: {} });
+    const transport = new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`));
+    await client.connect(transport);
+
+    try {
+      const raw = await client.callTool({
+        name: "cedar_validate",
+        arguments: {
+          policy_ref: "cedar://policies/test-store/admin",
+          schema_ref: "cedar://schema/test-store",
+        },
+      });
+      const result = raw as { content: Array<{ type: string; text?: string }> };
+      const parsed = JSON.parse(result.content.find((b) => b.type === "text")!.text!) as { valid: boolean; policy_count: number };
+      expect(parsed.valid).toBe(true);
+      expect(parsed.policy_count).toBe(1);
+    } finally {
+      await client.close();
+    }
+  }, 20_000);
+
+  it("HR4 — /health exposes active_sessions count + the deployer roots model", async () => {
+    // The /health endpoint reports active_sessions. Open a session, hit /health,
+    // verify count went up. Catches a leak where active_sessions doesn't
+    // reflect the actual map state, OR a bug where the map double-counts.
+    const before = await (await fetch(`${baseUrl}/health`)).json() as { active_sessions: number };
+
+    const client = new Client({ name: "http-root-health", version: "1.0.0" }, { capabilities: {} });
+    const transport = new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`));
+    await client.connect(transport);
+    // Force the session to fully initialize by making one round-trip
+    await client.listTools();
+
+    const during = await (await fetch(`${baseUrl}/health`)).json() as { active_sessions: number };
+    expect(during.active_sessions).toBeGreaterThanOrEqual(before.active_sessions + 1);
+
+    await client.close();
+  }, 20_000);
 });

@@ -65,7 +65,7 @@ describe("property — cedar_format idempotency across the option space", () => 
           expect(second.formatted).toBe(first.formatted);
         }
       ),
-      { numRuns: 30 }  // 30 runs is enough to surface idempotency violations; 100 would multiply WASM cost
+      { numRuns: 100 }  // fast-check default; handler calls are direct (~5ms) so total cost is bounded
     );
   }, 60_000);
 });
@@ -82,7 +82,7 @@ describe("property — cedar_validate is deterministic", () => {
         const b = await handleValidate({ policies: policy, schema: SCHEMA_STR });
         expect(b).toEqual(a);
       }),
-      { numRuns: 25 }
+      { numRuns: 100 }
     );
   }, 60_000);
 });
@@ -119,7 +119,7 @@ describe("property — cedar_authorize is deterministic", () => {
         expect(b.decision).toBe(a.decision);
         void action; // generator is the fc property driver; we don't use it directly
       }),
-      { numRuns: 20 }
+      { numRuns: 100 }
     );
   }, 60_000);
 });
@@ -153,7 +153,7 @@ describe("property — cedar_diff_schema add/remove symmetry", () => {
         expect(forward.entity_types.added).toHaveLength(reverse.entity_types.removed.length);
         expect(forward.entity_types.added[0]?.name).toBe(reverse.entity_types.removed[0]?.name);
       }),
-      { numRuns: 20 }
+      { numRuns: 100 }
     );
   }, 60_000);
 });
@@ -182,7 +182,7 @@ describe("property — cedar_diff_schema identity always returns safe", () => {
         expect(result.entity_types.removed).toHaveLength(0);
         expect(result.entity_types.modified).toHaveLength(0);
       }),
-      { numRuns: 20 }
+      { numRuns: 100 }
     );
   }, 60_000);
 });
@@ -203,7 +203,7 @@ describe("property — cedar_check_policy_change identity", () => {
         expect(result.changes).toHaveLength(0);
         expect(result.can_update_in_place).toBe(true);
       }),
-      { numRuns: 25 }
+      { numRuns: 100 }
     );
   }, 60_000);
 });
@@ -228,7 +228,7 @@ describe("property — cedar_translate roundtrip preserves validation", () => {
         const validateRoundtrip = await handleValidate({ policies: toCedar.output, schema: SCHEMA_STR });
         expect(validateRoundtrip.valid).toBe(validateOriginal.valid);
       }),
-      { numRuns: 30 }
+      { numRuns: 100 }
     );
   }, 60_000);
 });

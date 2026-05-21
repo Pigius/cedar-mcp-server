@@ -240,6 +240,12 @@ function extractScope(json: PolicyJson, schemaNamespace: string, schemaJson?: un
   let actionId: string | undefined;
   let principalRoleType: string | undefined;
   let principalRoleId: string | undefined;
+  // Direct principal/resource type pins (from `principal == Type::"id"` /
+  // `resource == Type::"id"`). When present, these override the
+  // schema-derived defaults so the generated request matches what the
+  // policy explicitly scoped to.
+  let pinnedPrincipalType: string | undefined;
+  let pinnedResourceType: string | undefined;
 
   // Extract action from scope
   if (json.action.op === "==") {
@@ -254,16 +260,43 @@ function extractScope(json: PolicyJson, schemaNamespace: string, schemaJson?: un
     if (entities[0]) actionId = entities[0].id;
   }
 
-  // Extract principal role from scope
+  // Extract principal from scope.
+  //
+  // `op === "in"` is the role-membership pattern: principal in Role::"X".
+  //   We record principalRoleType + principalRoleId so the entity builder
+  //   can attach the role as a parent.
+  //
+  // `op === "=="` is the direct pin: principal == User::"alice".
+  //   The principal type itself is information the generator needs (it
+  //   tells us which entity type to instantiate). Without this, the
+  //   generator fell back to schema-derived defaults that didn't always
+  //   match the policy's principal pin — caught by a regression test on
+  //   defaultActionIdFromSchema when the schema's first action's
+  //   appliesTo.principalTypes disagreed with the policy's pinned type.
   if (json.principal.op === "in") {
     const e = "entity" in json.principal ? (json.principal as Record<string, unknown>)["entity"] as { type: string; id: string } : null;
     if (e) {
       principalRoleType = e.type;
       principalRoleId = e.id;
     }
+  } else if (json.principal.op === "==") {
+    const e = "entity" in json.principal ? (json.principal as Record<string, unknown>)["entity"] as { type: string; id: string } : null;
+    if (e) {
+      pinnedPrincipalType = e.type;
+    }
   }
 
-  const { principalType, resourceType } = entityTypesFromSchema(schemaJson, schemaNamespace, actionId);
+  // Same handling for resource direct-pin.
+  if (json.resource.op === "==") {
+    const e = "entity" in json.resource ? (json.resource as Record<string, unknown>)["entity"] as { type: string; id: string } : null;
+    if (e) {
+      pinnedResourceType = e.type;
+    }
+  }
+
+  const derived = entityTypesFromSchema(schemaJson, schemaNamespace, actionId);
+  const principalType = pinnedPrincipalType ?? derived.principalType;
+  const resourceType = pinnedResourceType ?? derived.resourceType;
 
   return {
     principalType,
@@ -280,24 +313,59 @@ function extractScope(json: PolicyJson, schemaNamespace: string, schemaJson?: un
 /**
  * Pick a default action id when the policy scope doesn't specify one.
  *
- * The previous fallback was a hardcoded `"READ"` (uppercase) which mismatched
+ * Original fallback was a hardcoded `"READ"` (uppercase) which mismatched
  * schemas declaring lowercase action keys (e.g. `actions: { read: { ... } }`).
  * Cedar's request validator then rejected the request because `Action::"READ"`
  * isn't declared, causing a default-deny that contradicted the generator's
  * own `decision: "Allow"` self-report. Caught by e2e behavior test B3.
  *
- * Now: read the first action key from the schema's namespace.actions map.
- * Fall back to "read" (lowercase, matching the Cedar/AVP convention from
- * docs.cedarpolicy.com examples) only when no schema is supplied.
+ * The fix evolved through two iterations:
+ *
+ *   v1: return Object.keys(actions)[0] — picked the first declared action.
+ *       Broke when the schema's first action had `appliesTo.principalTypes`
+ *       that didn't include the scope's principal type. Example:
+ *         { adminOnly: { appliesTo: ["Admin"] }, read: { appliesTo: ["User"] } }
+ *       with a policy targeting `User` would pick `adminOnly`, then schema
+ *       validation rejects because the principal type doesn't apply.
+ *
+ *   v2 (this version): find an action whose `appliesTo.principalTypes` includes
+ *       the scope's bare principal type (e.g. "User" extracted from
+ *       "DocMgmt::User"). Falls back to the first action only if no match.
+ *       Final fallback is lowercase "read" when no schema is supplied at all.
  */
-function defaultActionIdFromSchema(schemaJson: unknown, namespace: string): string {
+function defaultActionIdFromSchema(
+  schemaJson: unknown,
+  namespace: string,
+  principalType?: string  // full namespaced form like "DocMgmt::User"
+): string {
   try {
     const ns = (schemaJson as Record<string, unknown>)?.[namespace] as Record<string, unknown> | undefined;
-    const actions = ns?.["actions"] as Record<string, unknown> | undefined;
-    if (actions) {
-      const keys = Object.keys(actions);
-      if (keys.length > 0) return keys[0]!;
+    const actions = ns?.["actions"] as Record<string, Record<string, unknown>> | undefined;
+    if (!actions) return "read";
+
+    const keys = Object.keys(actions);
+    if (keys.length === 0) return "read";
+
+    // Extract bare principal type name ("User" from "DocMgmt::User") for matching
+    // against the schema's appliesTo.principalTypes (which are stored unprefixed).
+    const barePrincipalType = principalType
+      ? principalType.split("::").pop()
+      : undefined;
+
+    if (barePrincipalType) {
+      for (const key of keys) {
+        const appliesTo = actions[key]?.["appliesTo"] as Record<string, unknown> | undefined;
+        const principalTypes = appliesTo?.["principalTypes"] as string[] | undefined;
+        if (principalTypes && principalTypes.includes(barePrincipalType)) {
+          return key;
+        }
+      }
     }
+
+    // No action has appliesTo matching the scope's principal type, OR no principal
+    // type was passed. Fall back to first declared action — better than the old
+    // hardcoded "READ" because at least it's a real declared action.
+    return keys[0]!;
   } catch { /* fall through */ }
   return "read";
 }
@@ -312,7 +380,7 @@ function buildEntities(
 ): { entities: EntityPayload[]; principalId: string; actionId: string; resourceId: string } {
   const principalId = "sample-principal";
   const resourceId = "sample-resource";
-  const actionId = scope.actionId ?? defaultActionIdFromSchema(schemaJson, schemaNamespace);
+  const actionId = scope.actionId ?? defaultActionIdFromSchema(schemaJson, schemaNamespace, scope.principalType);
 
   // Seed required attributes from schema so validateRequest: true doesn't fail on missing fields.
   // Condition-derived values (eq, has, contains, like) overwrite these defaults below.
