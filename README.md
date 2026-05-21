@@ -89,6 +89,10 @@ Rule of thumb for assistants: if a question is "what does this policy look like?
 
 > **Pre-release status:** this package is not yet published to npm. The `npx cedar-mcp-server` snippets below are the post-publish configuration; for now, install from source (see [Running from source](#running-from-source) below) and point your MCP client at the resulting local script instead of `npx`.
 
+### How MCP stdio servers work
+
+Your MCP client (Claude Code, Claude Desktop, Cursor) spawns `cedar-mcp-server` as a child process when it needs Cedar tooling. You do not run the server directly. You configure your client to point at it once, and the client manages the process lifecycle over stdio for each session. If you try `node dist/index.js` in a terminal it will appear to hang; that is the server waiting for JSON-RPC messages on stdin. Stop it with `Ctrl+C`.
+
 ### Run from source (current path)
 
 ```bash
@@ -123,6 +127,12 @@ Add to `.claude/settings.json` in your project, or to `~/.claude/settings.json` 
     }
   }
 }
+```
+
+If you register via `claude mcp add` instead of editing settings.json by hand, run the command from the directory you will actually use the server in. Claude Code stores MCP configurations per-project by default, so a registration done from one project does not surface in another. For a single global registration that works across every project, add `--scope user`:
+
+```bash
+claude mcp add --scope user cedar -- npx -y cedar-mcp-server
 ```
 
 ### Claude Desktop (after publish)
@@ -637,6 +647,8 @@ This pivot replaced the original sampling-based `cedar_advise` after dogfooding 
 
 **When to use:** at the start of any policy-change conversation, before recommending any Cedar snippet. Call this once per intent; iterate the plan in conversation rather than re-calling for small refinements (the bundle is the same for a given intent + store).
 
+**Tip: mention your store name in the prompt.** For best results, name your policy store when you ask cedar_advise to plan a change (for example, "plan this change against my cedar-sandbox store" or "modify policies in production"). With a store name, the bundle grounds in your actual schema, full policy inventory, and detected patterns. Without one, `store_status` is `"not_provided"` and the bundle returns the generic Cedar / AVP context only, which forces the assistant to either guess or fall back to reading the files itself.
+
 ---
 
 ### `cedar_validate_template`
@@ -1049,6 +1061,12 @@ CLI flags:
 | `--host <host>` | no | Bind host (default `127.0.0.1`) |
 | `--root <name>=<path>` | repeatable | Deployer-configured policy store; clients see these as MCP Roots |
 | `--help` | no | Print usage |
+
+### Roots in stdio vs HTTP mode
+
+In stdio mode, your MCP client advertises its workspace folders to the server automatically via the `listRoots()` protocol. You do not need the `--root` flag at all; the server queries the client on initialize and loads any directories that look like Cedar policy stores. If you pass `--root` to the stdio binary, the server exits at startup with an error message saying `--root` is HTTP-only. This is intentional: in stdio, the client is the authority on what is in scope.
+
+In HTTP mode, there is no client workspace to negotiate with; the operator running the long-lived process is the authority. The `--root name=path` flag is how the deployer tells the server "expose this directory as a named policy store". Pass `--root` once per store. Every connected HTTP client sees the same set of roots.
 
 ### Endpoints
 
