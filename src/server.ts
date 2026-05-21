@@ -22,6 +22,81 @@ import { storeManager } from "./resources/store-manager.js";
 import { resolveRef } from "./resources/ref-resolver.js";
 import { PROMPT_DEFINITIONS } from "./prompts/index.js";
 
+/**
+ * Helpers that build ListResourcesCallback functions for the cedar:// URI
+ * scheme. The MCP `resources/list` method calls each ResourceTemplate's
+ * `list` callback and merges the results so clients can discover what is
+ * actually available rather than guessing the URI shape.
+ */
+
+type ListResult = { resources: Array<{ uri: string; name: string; mimeType?: string; description?: string }> };
+
+/** Build a list of `cedar://<kind>/{store}` index resources, one per loaded store. */
+function listIndexResources(kind: string, mimeType: string, describe: (store: string) => string) {
+  return (): ListResult => {
+    const resources: ListResult["resources"] = [];
+    for (const storeName of storeManager.listStoreNames()) {
+      resources.push({
+        uri: `cedar://${kind}/${storeName}`,
+        name: `${kind}:${storeName}`,
+        mimeType,
+        description: describe(storeName),
+      });
+    }
+    return { resources };
+  };
+}
+
+/** Build a list of per-item resources `cedar://<kind>/{store}/{id}` across all loaded stores. */
+function listItemResources(
+  kind: string,
+  mimeType: string,
+  enumerate: (storeName: string) => string[],
+  describe: (storeName: string, id: string) => string,
+) {
+  return (): ListResult => {
+    const resources: ListResult["resources"] = [];
+    for (const storeName of storeManager.listStoreNames()) {
+      let ids: string[];
+      try {
+        ids = enumerate(storeName);
+      } catch {
+        continue; // store lacks this subdirectory; silently skip
+      }
+      for (const id of ids) {
+        resources.push({
+          uri: `cedar://${kind}/${storeName}/${id}`,
+          name: `${id}`,
+          mimeType,
+          description: describe(storeName, id),
+        });
+      }
+    }
+    return { resources };
+  };
+}
+
+/** Build the schema-resource enumeration: one per store that has a schema file. */
+function listSchemaResources() {
+  return (): ListResult => {
+    const resources: ListResult["resources"] = [];
+    for (const storeName of storeManager.listStoreNames()) {
+      try {
+        storeManager.readSchema(storeName); // confirm the file exists
+      } catch {
+        continue;
+      }
+      resources.push({
+        uri: `cedar://schema/${storeName}`,
+        name: `schema:${storeName}`,
+        mimeType: "text/plain",
+        description: `Cedar schema (.cedarschema or schema.json) for store "${storeName}"`,
+      });
+    }
+    return { resources };
+  };
+}
+
 export const SERVER_NAME = "cedar-mcp-server";
 export const SERVER_VERSION = "0.0.1";
 
@@ -427,7 +502,9 @@ export function createServer(): McpServer {
   // List all policy IDs in a store: cedar://policies/{store}
   server.resource(
     "cedar-policies-list",
-    new ResourceTemplate("cedar://policies/{store}", { list: undefined }),
+    new ResourceTemplate("cedar://policies/{store}", {
+      list: listIndexResources("policies", "application/json", (s) => `JSON list of policy IDs in store "${s}"`),
+    }),
     async (_uri, variables) => {
       const storeName = variables["store"] as string;
       try {
@@ -454,7 +531,14 @@ export function createServer(): McpServer {
   // Read a single policy: cedar://policies/{store}/{policy_id}
   server.resource(
     "cedar-policy",
-    new ResourceTemplate("cedar://policies/{store}/{policy_id}", { list: undefined }),
+    new ResourceTemplate("cedar://policies/{store}/{policy_id}", {
+      list: listItemResources(
+        "policies",
+        "text/plain",
+        (storeName) => storeManager.listPolicies(storeName),
+        (storeName, id) => `Cedar policy "${id}" in store "${storeName}"`,
+      ),
+    }),
     async (uri, variables) => {
       const storeName = variables["store"] as string;
       const policyId = variables["policy_id"] as string;
@@ -482,7 +566,7 @@ export function createServer(): McpServer {
   // Read schema for a store: cedar://schema/{store}
   server.resource(
     "cedar-schema",
-    new ResourceTemplate("cedar://schema/{store}", { list: undefined }),
+    new ResourceTemplate("cedar://schema/{store}", { list: listSchemaResources() }),
     async (uri, variables) => {
       const storeName = variables["store"] as string;
       try {
@@ -509,7 +593,9 @@ export function createServer(): McpServer {
   // List all template IDs in a store: cedar://templates/{store}
   server.resource(
     "cedar-templates-list",
-    new ResourceTemplate("cedar://templates/{store}", { list: undefined }),
+    new ResourceTemplate("cedar://templates/{store}", {
+      list: listIndexResources("templates", "application/json", (s) => `JSON list of template IDs in store "${s}"`),
+    }),
     async (_uri, variables) => {
       const storeName = variables["store"] as string;
       try {
@@ -524,7 +610,14 @@ export function createServer(): McpServer {
   // Read a single template: cedar://templates/{store}/{template_id}
   server.resource(
     "cedar-template",
-    new ResourceTemplate("cedar://templates/{store}/{template_id}", { list: undefined }),
+    new ResourceTemplate("cedar://templates/{store}/{template_id}", {
+      list: listItemResources(
+        "templates",
+        "text/plain",
+        (storeName) => storeManager.listTemplates(storeName),
+        (storeName, id) => `Cedar template "${id}" in store "${storeName}"`,
+      ),
+    }),
     async (uri, variables) => {
       const storeName = variables["store"] as string;
       const templateId = variables["template_id"] as string;
@@ -540,7 +633,9 @@ export function createServer(): McpServer {
   // List all template link IDs: cedar://template-links/{store}
   server.resource(
     "cedar-template-links-list",
-    new ResourceTemplate("cedar://template-links/{store}", { list: undefined }),
+    new ResourceTemplate("cedar://template-links/{store}", {
+      list: listIndexResources("template-links", "application/json", (s) => `JSON list of template-link IDs in store "${s}"`),
+    }),
     async (_uri, variables) => {
       const storeName = variables["store"] as string;
       try {
@@ -555,7 +650,14 @@ export function createServer(): McpServer {
   // Read a single template link: cedar://template-links/{store}/{link_id}
   server.resource(
     "cedar-template-link",
-    new ResourceTemplate("cedar://template-links/{store}/{link_id}", { list: undefined }),
+    new ResourceTemplate("cedar://template-links/{store}/{link_id}", {
+      list: listItemResources(
+        "template-links",
+        "application/json",
+        (storeName) => storeManager.listTemplateLinks(storeName),
+        (storeName, id) => `Cedar template-link "${id}" in store "${storeName}"`,
+      ),
+    }),
     async (uri, variables) => {
       const storeName = variables["store"] as string;
       const linkId = variables["link_id"] as string;
@@ -571,7 +673,9 @@ export function createServer(): McpServer {
   // List entity files in a store: cedar://entities/{store}
   server.resource(
     "cedar-entities-list",
-    new ResourceTemplate("cedar://entities/{store}", { list: undefined }),
+    new ResourceTemplate("cedar://entities/{store}", {
+      list: listIndexResources("entities", "application/json", (s) => `JSON list of entity-file IDs in store "${s}"`),
+    }),
     async (_uri, variables) => {
       const storeName = variables["store"] as string;
       try {
@@ -586,7 +690,14 @@ export function createServer(): McpServer {
   // Read a single entity file: cedar://entities/{store}/{file_id}
   server.resource(
     "cedar-entities",
-    new ResourceTemplate("cedar://entities/{store}/{file_id}", { list: undefined }),
+    new ResourceTemplate("cedar://entities/{store}/{file_id}", {
+      list: listItemResources(
+        "entities",
+        "application/json",
+        (storeName) => storeManager.listEntities(storeName),
+        (storeName, id) => `Cedar entities file "${id}" in store "${storeName}"`,
+      ),
+    }),
     async (uri, variables) => {
       const storeName = variables["store"] as string;
       const fileId = variables["file_id"] as string;

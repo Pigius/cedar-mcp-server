@@ -549,4 +549,40 @@ describe("integration HTTP smoke — with --root configured", () => {
 
     await client.close();
   }, 20_000);
+
+  it("HR7 — resources/list enumerates cedar:// URIs from loaded roots (H2)", async () => {
+    // The MCP resources/list method must enumerate the cedar:// URIs the
+    // server can actually serve, so UI-driven MCP clients (and any client
+    // not pre-trained on the URI scheme) can discover what is available.
+    // Before H2 fixed this, the server returned an empty list even though
+    // every cedar:// URI resolved correctly when referenced as policy_ref,
+    // schema_ref, or entities_ref.
+    const client = new Client({ name: "http-root-list-resources", version: "1.0.0" }, { capabilities: {} });
+    const transport = new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`));
+    await client.connect(transport);
+
+    try {
+      const { resources } = await client.listResources();
+      const uris = resources.map((r) => r.uri);
+
+      // Per-item resources for the test-store: 1 policy + 1 schema + 1 entities file
+      expect(uris).toContain("cedar://policies/test-store/admin");
+      expect(uris).toContain("cedar://schema/test-store");
+      expect(uris).toContain("cedar://entities/test-store/alice-and-docs");
+
+      // Index resources (the {store} listing endpoints)
+      expect(uris).toContain("cedar://policies/test-store");
+      expect(uris).toContain("cedar://entities/test-store");
+
+      // Sanity: total should be at least 5 (1 policy + 1 schema + 1 entities + 2 indexes)
+      expect(uris.length).toBeGreaterThanOrEqual(5);
+
+      // Every resource must carry a non-empty name field (MCP requires it)
+      for (const r of resources) {
+        expect(r.name, `resource ${r.uri} missing name`).toBeTruthy();
+      }
+    } finally {
+      await client.close();
+    }
+  }, 20_000);
 });
