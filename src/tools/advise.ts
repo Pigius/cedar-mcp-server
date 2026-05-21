@@ -1,280 +1,301 @@
-import { policyToJson } from "@cedar-policy/cedar-wasm/nodejs";
-import { resolveStoreRef, buildStoreContext, formatContextForPrompt } from "./advise/context-builder.js";
-import { selectGotchas } from "./advise/gotchas.js";
-import { CEDAR_PATTERNS_SUMMARY } from "./advise/cedar-patterns.js";
-import { AVP_RULES_SUMMARY } from "./advise/avp-rules.js";
-import { storeManager, StoreManager } from "../resources/store-manager.js";
+/**
+ * cedar_advise — Cedar policy change planning context preparator.
+ *
+ * This tool returns deterministic, structured context for the calling LLM to
+ * produce a Cedar policy change plan natively. No MCP sampling, no client LLM
+ * round-trip. The bundle encodes Cedar/AVP knowledge that does not live in the
+ * policy files themselves (pattern classification, AVP UpdatePolicy mutability
+ * rules, intent-selected gotchas, sequencing rules) and is what makes the
+ * server load-bearing rather than substitutable by Read.
+ *
+ * Design v2, 2026-05-21: pivoted from sampling-based planner. See
+ * projects/cedar-mcp-server/02-technical-design.md "design v2".
+ */
 
-export type Sampler = (userPrompt: string, systemPrompt: string) => Promise<string>;
+import { checkParseSchema, schemaToJsonWithResolvedTypes } from "@cedar-policy/cedar-wasm/nodejs";
+import type { Schema } from "@cedar-policy/cedar-wasm/nodejs";
+import { resolveStoreRef, buildStoreContext } from "./advise/context-builder.js";
+import type { PolicyInventoryEntry } from "./advise/context-builder.js";
+import { selectGotchas, type Gotcha } from "./advise/gotchas.js";
+import { CEDAR_PATTERNS_SUMMARY } from "./advise/cedar-patterns.js";
+import { AVP_RULES_SUMMARY, AVP_VALIDATION_ERRORS } from "./advise/avp-rules.js";
+import { storeManager, StoreManager } from "../resources/store-manager.js";
 
 export interface AdviseInput {
   intent: string;
   store_ref?: string;
-  previous_plan?: unknown;
-  format_preference?: "structured" | "narrative";
-}
-
-export interface AdviseChange {
-  step: number;
-  type: string;
-  description: string;
-  rationale?: string;
-  cedar_snippet?: string;
-  cedar_snippet_before?: string;
-  cedar_snippet_after?: string;
-  avp_update_mode?: string;
-  avp_consideration?: string;
-  policy_id?: string;
 }
 
 export interface AdviseGotcha {
   id: string;
-  severity: string;
+  severity: "high" | "medium" | "info";
   description: string;
   avp_error_category?: string;
 }
 
-export interface AdviseResult {
-  intent_interpretation?: string;
-  applicable_cedar_pattern?: string;
-  affected_entities?: {
-    principal_type?: string;
-    action_ids?: string[];
-    resource_type?: string;
+export interface SchemaSummary {
+  valid: boolean;
+  format: "json" | "cedarschema";
+  namespaces: string[];
+  entity_type_count: number;
+  action_count: number;
+  raw_text: string;
+  errors?: string[];
+}
+
+export interface PatternDetected {
+  pattern: string;
+  count: number;
+}
+
+export interface CedarPatternDescription {
+  name: string;
+  description: string;
+  example: string;
+}
+
+export interface AvpUpdatePolicyRules {
+  summary: string;
+  in_place_via_update_policy: string[];
+  requires_delete_recreate: string[];
+  new_via_create_policy: string[];
+  notes: string[];
+}
+
+export interface AdviseContextBundle {
+  tool: "cedar_advise";
+  bundle_version: "v2";
+  intent: string;
+  store_name?: string;
+  store_status: "loaded" | "not_provided" | "not_found";
+  schema_summary?: SchemaSummary;
+  policy_inventory: PolicyInventoryEntry[];
+  patterns_detected_in_store: PatternDetected[];
+  applicable_gotchas: AdviseGotcha[];
+  avp_update_policy_rules: AvpUpdatePolicyRules;
+  avp_validation_error_catalog: { id: string; description: string }[];
+  cedar_patterns_reference: {
+    summary: string;
+    patterns: CedarPatternDescription[];
   };
-  required_changes?: AdviseChange[];
-  gotchas?: AdviseGotcha[];
-  verification_next_steps?: string;
-  delta_from_previous?: boolean;
-  unchanged_steps?: number[];
-  modified_steps?: unknown[];
-  added_steps?: unknown[];
-  removed_steps?: unknown[];
-  error?: string;
-  raw_response?: string;
+  sequencing_guidance: string[];
+  next_steps_for_llm: string;
 }
 
-const SYSTEM_PROMPT = `You are a senior Cedar policy developer and Amazon Verified Permissions expert. Your role is to help developers design Cedar policy changes safely. You have deep knowledge of Cedar policy patterns (Membership/RBAC, Relationship/ReBAC, Discretionary), the Cedar language gotchas, and the Amazon Verified Permissions API constraints (especially UpdatePolicy immutability rules).
+const SEQUENCING_GUIDANCE: string[] = [
+  "Schema changes that add new entity types, attributes, or actions MUST be deployed BEFORE policies that reference them. AVP validates each policy against the current schema at CreatePolicy/UpdatePolicy time.",
+  "Removing an entity type, action, or required attribute is BREAKING for any policy that references it. Update or delete dependent policies first, then remove the schema element.",
+  "Changing a required attribute to optional is safe; changing an optional attribute to required can silently skip policies that previously matched (Cedar drops policies that touch a missing required attribute via UnsafeOptionalAttributeAccess).",
+  "For renames (entity type, action id, attribute name), there is no atomic rename in AVP. Plan as: add the new name + dual-write policies, migrate consumers, then remove the old name.",
+];
 
-Always respond with a single valid JSON object matching the requested schema. Do not include any text, markdown, or prose outside the JSON object. The JSON must be parseable by JSON.parse().`;
+const AVP_UPDATE_POLICY_RULES: AvpUpdatePolicyRules = {
+  summary: AVP_RULES_SUMMARY,
+  in_place_via_update_policy: [
+    "Action scope (action == ... or action in [...])",
+    "When/unless condition clauses",
+    "Policy name / description metadata",
+  ],
+  requires_delete_recreate: [
+    "Effect (permit ↔ forbid)",
+    "Principal scope (head clause)",
+    "Resource scope (head clause)",
+    "Conversion between static and template-linked policy",
+  ],
+  new_via_create_policy: [
+    "Wholly new policy added to the store (no in-place path applies)",
+  ],
+  notes: [
+    "UpdatePolicy only updates STATIC policies. Template-linked policies use UpdatePolicyTemplate (or relink).",
+    "AVP error code for an attempted illegal change is ConflictException / ResourceNotFoundException depending on whether the policy still resolves under the new shape.",
+  ],
+};
 
-const FULL_OUTPUT_SCHEMA = `Respond with exactly this JSON structure (omit optional fields if not applicable):
-{
-  "intent_interpretation": "one sentence re-statement of the intent in Cedar terms",
-  "applicable_cedar_pattern": "Membership|Relationship|Discretionary|hybrid description",
-  "affected_entities": {
-    "principal_type": "Namespace::EntityType",
-    "action_ids": ["ACTION_NAME"],
-    "resource_type": "Namespace::EntityType"
+const CEDAR_PATTERNS_DETAIL: CedarPatternDescription[] = [
+  {
+    name: "Membership (RBAC)",
+    description: "Principal head clause uses `in Role::\"…\"` or similar group/role parent. Permissions follow group membership.",
+    example: 'permit (principal in App::Role::"editor", action in [App::Action::"read"], resource);',
   },
-  "required_changes": [
-    {
-      "step": 1,
-      "type": "schema|policy_new|policy_modify|policy_delete",
-      "description": "what changes",
-      "rationale": "why this change, why this sequence",
-      "cedar_snippet": "Cedar text for schema or policy_new",
-      "cedar_snippet_before": "existing Cedar text for policy_modify",
-      "cedar_snippet_after": "updated Cedar text for policy_modify",
-      "avp_update_mode": "in_place_via_update_policy|requires_delete_recreate|new_policy_via_create_policy",
-      "avp_consideration": "AVP deployment note if relevant",
-      "policy_id": "policy file id for policy_modify or policy_delete"
-    }
-  ],
-  "gotchas": [
-    {
-      "id": "gotcha_id",
-      "severity": "high|medium|info",
-      "description": "what to watch out for",
-      "avp_error_category": "AVP error category if applicable"
-    }
-  ],
-  "verification_next_steps": "how to verify the plan was applied correctly"
-}`;
+  {
+    name: "Relationship (ReBAC)",
+    description: "Conditions reference principal's relationship to the resource (often via an attribute on resource like `owners`, `viewers`, `team`).",
+    example: 'permit (principal is App::User, action in [App::Action::"read"], resource is App::Doc) when { principal in resource.owners };',
+  },
+  {
+    name: "Discretionary",
+    description: "Principal head clause uses `==` to grant access to a specific named entity (no group, no relationship — ad hoc).",
+    example: 'permit (principal == App::Service::"ingest", action == App::Action::"write", resource == App::Bucket::"raw");',
+  },
+  {
+    name: "Hybrid",
+    description: "Policy combines membership in the head clause with a relationship or ABAC predicate in the condition body. Common in production stores.",
+    example: 'permit (principal in App::Role::"editor", action in [App::Action::"write"], resource) when { principal in resource.team };',
+  },
+];
 
-const DELTA_OUTPUT_SCHEMA = `Respond with exactly this JSON structure:
-{
-  "delta_from_previous": true,
-  "unchanged_steps": [1, 2],
-  "modified_steps": [
-    { "step": 3, "before": { "step contents from previous plan" }, "after": { "updated step contents" }, "reason": "what changed and why" }
-  ],
-  "added_steps": [{ "new step objects" }],
-  "removed_steps": [{ "removed step objects" }],
-  "intent_interpretation": "updated interpretation covering both old and new intent",
-  "applicable_cedar_pattern": "pattern",
-  "affected_entities": { "principal_type": "...", "action_ids": ["..."], "resource_type": "..." },
-  "required_changes": ["FULL updated list of all steps in final order"],
-  "gotchas": ["all relevant gotchas for the combined plan"],
-  "verification_next_steps": "..."
-}`;
+const NEXT_STEPS_FOR_LLM = `Use this context to produce a Cedar policy change plan. Do not skip these steps:
 
-export async function handleAdvise(
+1. Identify the entity types, attributes, and actions in schema_summary that the user's intent touches. If schema_summary is absent (store_status != "loaded"), state the assumption you are making about the schema and ask the user to confirm.
+2. Pick the most appropriate cedar_patterns_reference pattern for the change. If the store already uses a dominant pattern (see patterns_detected_in_store), prefer it for consistency unless the intent requires otherwise.
+3. Sequence steps per sequencing_guidance. Schema changes that add a referenced attribute MUST precede policy changes that read it.
+4. For each step that modifies an existing policy, classify it against avp_update_policy_rules. Effect / principal / resource changes require delete-and-recreate; action and when/unless changes are in-place.
+5. Address every applicable_gotcha in the plan (either by structuring the snippet to avoid it, or by surfacing it as a warning to the user).
+6. After drafting Cedar snippets, call cedar_validate on each to confirm syntax + schema-typing before recommending them. Reading a snippet does not tell you whether the Cedar parser accepts it.
+7. For each modification to an existing policy, call cedar_check_policy_change with the old and new text to confirm the AVP UpdatePolicy classification you assigned.
+8. If the change spans two stores (current vs. proposed), call cedar_diff_policy_stores to check for behavioral drift before recommending deployment.`;
+
+/**
+ * Build the cedar_advise context bundle.
+ *
+ * Pure function — no sampler, no LLM round-trip. The calling MCP client's
+ * conversation LLM is expected to interpret this bundle and produce the plan.
+ */
+export function handleAdvise(
   input: AdviseInput,
-  sampler: Sampler,
   manager: StoreManager = storeManager
-): Promise<AdviseResult> {
-  const storeContextSection = resolveStoreContext(input.store_ref, manager);
-  const gotchaSection = buildGotchaSection(input.intent);
-  const userPrompt = buildUserPrompt(input, storeContextSection, gotchaSection);
-  const raw = await sampler(userPrompt, SYSTEM_PROMPT);
-  const result = parseAdviseResponse(raw);
-  return validateSnippets(result);
+): AdviseContextBundle {
+  const gotchas = selectGotchas(input.intent).map(gotchaToAdvise);
+  const storeView = resolveStoreView(input.store_ref, manager);
+
+  return {
+    tool: "cedar_advise",
+    bundle_version: "v2",
+    intent: input.intent,
+    store_name: storeView.store_name,
+    store_status: storeView.store_status,
+    schema_summary: storeView.schema_summary,
+    policy_inventory: storeView.policy_inventory,
+    patterns_detected_in_store: storeView.patterns_detected,
+    applicable_gotchas: gotchas,
+    avp_update_policy_rules: AVP_UPDATE_POLICY_RULES,
+    avp_validation_error_catalog: AVP_VALIDATION_ERRORS.map(e => ({ id: e.id, description: e.description })),
+    cedar_patterns_reference: {
+      summary: CEDAR_PATTERNS_SUMMARY,
+      patterns: CEDAR_PATTERNS_DETAIL,
+    },
+    sequencing_guidance: SEQUENCING_GUIDANCE,
+    next_steps_for_llm: NEXT_STEPS_FOR_LLM,
+  };
 }
 
-function resolveStoreContext(storeRef: string | undefined, manager: StoreManager): string {
+interface StoreView {
+  store_name?: string;
+  store_status: "loaded" | "not_provided" | "not_found";
+  schema_summary?: SchemaSummary;
+  policy_inventory: PolicyInventoryEntry[];
+  patterns_detected: PatternDetected[];
+}
+
+function resolveStoreView(storeRef: string | undefined, manager: StoreManager): StoreView {
   if (!storeRef) {
-    return "No policy store provided — produce a generic plan based on the intent alone.";
+    return { store_status: "not_provided", policy_inventory: [], patterns_detected: [] };
   }
   const storeName = resolveStoreRef(storeRef);
   const ctx = buildStoreContext(storeName, manager);
   if (!ctx) {
-    return `Store "${storeName}" not found or has no content — produce a generic plan.`;
+    return { store_name: storeName, store_status: "not_found", policy_inventory: [], patterns_detected: [] };
   }
-  return formatContextForPrompt(ctx);
-}
-
-function buildGotchaSection(intent: string): string {
-  const selected = selectGotchas(intent);
-  if (selected.length === 0) {
-    return "No specific gotchas pre-selected — apply general Cedar safety rules.";
-  }
-  return selected
-    .map(g => `[${g.severity.toUpperCase()}] ${g.id}: ${g.description}`)
-    .join("\n\n");
-}
-
-function buildUserPrompt(input: AdviseInput, storeContextSection: string, gotchaSection: string): string {
-  const isDelta = input.previous_plan != null;
-  const outputSchema = isDelta ? DELTA_OUTPUT_SCHEMA : FULL_OUTPUT_SCHEMA;
-  const task = isDelta
-    ? `The user has already received a plan (shown in "Previous Plan" below). Their new intent refines or extends that plan. Produce ONLY the delta: which steps are unchanged, which are modified, which are added, and which are removed. Also include the full updated required_changes list for convenience.`
-    : `Produce a complete Cedar policy change plan for the user's intent. Sequence schema changes before policy changes that reference new attributes. Classify each change's AVP update mode (in_place_via_update_policy, requires_delete_recreate, or new_policy_via_create_policy).`;
-
-  const sections: string[] = [
-    `## Cedar Policy Patterns Reference\n${CEDAR_PATTERNS_SUMMARY}`,
-    `## AVP UpdatePolicy API Rules\n${AVP_RULES_SUMMARY}`,
-    `## Pre-Selected Gotchas for This Request\n${gotchaSection}`,
-    `## Current Policy Store Context\n${storeContextSection}`,
-  ];
-
-  if (isDelta) {
-    sections.push(`## Previous Plan\n${JSON.stringify(input.previous_plan, null, 2)}`);
-  }
-
-  sections.push(`## User Intent\n${input.intent}`);
-  sections.push(`## Task\n${task}`);
-  sections.push(`## Required Output Schema\n${outputSchema}`);
-
-  return sections.join("\n\n");
-}
-
-function validateSnippets(result: AdviseResult): AdviseResult {
-  if (!result.required_changes || result.error) return result;
-
-  const snippetErrors: string[] = [];
-
-  for (const change of result.required_changes) {
-    const snippetsToCheck: Array<{ field: string; text: string }> = [];
-
-    if (change.type !== "schema") {
-      if (change.cedar_snippet) snippetsToCheck.push({ field: "cedar_snippet", text: change.cedar_snippet });
-    }
-    if (change.cedar_snippet_before) snippetsToCheck.push({ field: "cedar_snippet_before", text: change.cedar_snippet_before });
-    if (change.cedar_snippet_after) snippetsToCheck.push({ field: "cedar_snippet_after", text: change.cedar_snippet_after });
-
-    for (const { field, text } of snippetsToCheck) {
-      const parsed = policyToJson(text);
-      if (parsed.type === "failure") {
-        const msg = parsed.errors.map(e => e.message).join("; ");
-        snippetErrors.push(`Step ${change.step} ${field}: ${msg} (snippet: ${text.slice(0, 80)})`);
-      }
-    }
-  }
-
-  if (snippetErrors.length === 0) return result;
-
-  const gotchas = result.gotchas ?? [];
-  const alreadyPresent = gotchas.some(g => g.id === "invalid_cedar_snippet_in_plan");
-  if (alreadyPresent) return result;
-
   return {
-    ...result,
-    gotchas: [
-      ...gotchas,
-      {
-        id: "invalid_cedar_snippet_in_plan",
-        severity: "high",
-        description: `One or more cedar_snippet fields in the plan failed to parse as valid Cedar. Verify and fix before applying. Errors: ${snippetErrors.join(" | ")}`,
-      },
-    ],
+    store_name: ctx.store_name,
+    store_status: "loaded",
+    schema_summary: summarizeSchema(ctx.schema_text),
+    policy_inventory: ctx.policy_inventory,
+    patterns_detected: countPatterns(ctx.policy_inventory),
   };
 }
 
-function parseAdviseResponse(raw: string): AdviseResult {
-  let json = raw.trim();
-
-  // Strip markdown code blocks
-  const codeBlockMatch = json.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-  if (codeBlockMatch) {
-    json = codeBlockMatch[1]!.trim();
+function summarizeSchema(schemaText: string): SchemaSummary {
+  const parsed = parseSchemaInput(schemaText);
+  const answer = checkParseSchema(parsed.schema);
+  if (answer.type === "failure") {
+    return {
+      valid: false,
+      format: parsed.format,
+      namespaces: [],
+      entity_type_count: 0,
+      action_count: 0,
+      raw_text: schemaText,
+      errors: answer.errors.map(e => e.message),
+    };
   }
 
-  let result: AdviseResult;
+  if (parsed.format === "json") {
+    const counts = summarizeJsonSchema(parsed.schema);
+    return { valid: true, format: parsed.format, raw_text: schemaText, ...counts };
+  }
+
+  // For cedarschema text, translate to JSON form to derive structural counts.
   try {
-    result = JSON.parse(json) as AdviseResult;
-  } catch {
-    const objectMatch = json.match(/\{[\s\S]*\}/);
-    if (objectMatch) {
-      try {
-        result = JSON.parse(objectMatch[0]) as AdviseResult;
-      } catch {
-        return { error: "Failed to parse LLM response as JSON", raw_response: raw };
-      }
-    } else {
-      return { error: "Failed to parse LLM response as JSON", raw_response: raw };
+    const jsonAnswer = schemaToJsonWithResolvedTypes(schemaText);
+    if (jsonAnswer.type === "success") {
+      const counts = summarizeJsonSchema(jsonAnswer.json);
+      return { valid: true, format: parsed.format, raw_text: schemaText, ...counts };
     }
+  } catch {
+    // fall through to summary-less success
   }
 
-  return postProcess(result);
+  return {
+    valid: true,
+    format: parsed.format,
+    namespaces: [],
+    entity_type_count: 0,
+    action_count: 0,
+    raw_text: schemaText,
+  };
 }
 
-/** Correct deterministic errors in LLM output that are mechanically verifiable. */
-function postProcess(result: AdviseResult): AdviseResult {
-  const changes = result.required_changes;
-  if (!changes) return result;
-
-  // Fix: policy_new must always be new_policy_via_create_policy
-  //      policy_delete must always be requires_delete_recreate
-  const corrected = changes.map(c => {
-    if (c.type === "policy_new") {
-      return { ...c, avp_update_mode: "new_policy_via_create_policy" };
-    }
-    if (c.type === "policy_delete") {
-      return { ...c, avp_update_mode: "requires_delete_recreate" };
-    }
-    return c;
-  });
-
-  // Detect schema ordering violation: any schema step has a higher step number
-  // than any policy step that could reference it
-  const schemaSteps = corrected.filter(c => c.type === "schema").map(c => c.step);
-  const policySteps = corrected.filter(c => c.type !== "schema").map(c => c.step);
-  const hasOrderingBug = schemaSteps.some(sStep =>
-    policySteps.some(pStep => pStep < sStep)
-  );
-
-  let gotchas = result.gotchas ?? [];
-  if (hasOrderingBug && !gotchas.some(g => g.id === "schema_first_then_policy")) {
-    gotchas = [
-      ...gotchas,
-      {
-        id: "schema_first_then_policy",
-        severity: "medium",
-        description: "A schema change step appears after a policy step in the plan. Schema changes must be deployed BEFORE policies that reference new attributes. Reorder steps so all schema changes precede policy changes that depend on them.",
-      },
-    ];
+function parseSchemaInput(schemaStr: string): { schema: Schema; format: "json" | "cedarschema" } {
+  try {
+    return { schema: JSON.parse(schemaStr), format: "json" };
+  } catch {
+    return { schema: schemaStr, format: "cedarschema" };
   }
+}
 
-  return { ...result, required_changes: corrected, gotchas };
+interface JsonSchemaShape {
+  [namespace: string]: {
+    entityTypes?: Record<string, unknown>;
+    actions?: Record<string, unknown>;
+  };
+}
+
+function summarizeJsonSchema(json: unknown): {
+  namespaces: string[];
+  entity_type_count: number;
+  action_count: number;
+} {
+  const empty = { namespaces: [], entity_type_count: 0, action_count: 0 };
+  if (!json || typeof json !== "object") return empty;
+  const shape = json as JsonSchemaShape;
+  const namespaces = Object.keys(shape);
+  let entity_type_count = 0;
+  let action_count = 0;
+  for (const ns of namespaces) {
+    const block = shape[ns];
+    if (block.entityTypes) entity_type_count += Object.keys(block.entityTypes).length;
+    if (block.actions) action_count += Object.keys(block.actions).length;
+  }
+  return { namespaces, entity_type_count, action_count };
+}
+
+function countPatterns(inventory: PolicyInventoryEntry[]): PatternDetected[] {
+  const counts = new Map<string, number>();
+  for (const entry of inventory) {
+    counts.set(entry.pattern, (counts.get(entry.pattern) ?? 0) + 1);
+  }
+  return Array.from(counts.entries()).map(([pattern, count]) => ({ pattern, count }));
+}
+
+function gotchaToAdvise(g: Gotcha): AdviseGotcha {
+  const advise: AdviseGotcha = {
+    id: g.id,
+    severity: g.severity,
+    description: g.description,
+  };
+  if (g.avp_error_category) {
+    advise.avp_error_category = g.avp_error_category;
+  }
+  return advise;
 }

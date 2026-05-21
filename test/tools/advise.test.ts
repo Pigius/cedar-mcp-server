@@ -2,143 +2,55 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { handleAdvise, type Sampler } from "../../src/tools/advise.js";
+import { handleAdvise } from "../../src/tools/advise.js";
 import { StoreManager } from "../../src/resources/store-manager.js";
 
-// ─── Fixture data ─────────────────────────────────────────────────────────────
+// ─── Fixture data (Dataset 1: DocMgmt, NDA-safe) ──────────────────────────────
 
 const SCHEMA_CEDARSCHEMA = `namespace DocMgmt {
-  entity User in [Role] = { name: String };
+  entity User in [Role] = { name: String, email: String };
   entity Role;
   entity Document = { classification: String, business_unit: String };
   action READ appliesTo { principal: [User], resource: [Document], context: {} };
   action WRITE appliesTo { principal: [User], resource: [Document], context: {} };
 }`;
 
+const SCHEMA_JSON = JSON.stringify({
+  DocMgmt: {
+    entityTypes: {
+      User: { memberOfTypes: ["Role"], shape: { type: "Record", attributes: { name: { type: "String", required: true } } } },
+      Role: { shape: { type: "Record", attributes: {} }, memberOfTypes: [] },
+      Document: { shape: { type: "Record", attributes: { classification: { type: "String", required: true } } } },
+    },
+    actions: {
+      READ: { appliesTo: { principalTypes: ["User"], resourceTypes: ["Document"], context: { type: "Record", attributes: {} } } },
+      WRITE: { appliesTo: { principalTypes: ["User"], resourceTypes: ["Document"], context: { type: "Record", attributes: {} } } },
+    },
+  },
+});
+
 const ADMIN_POLICY = `permit(principal in DocMgmt::Role::"admin", action, resource);`;
 const EDITOR_POLICY = `permit(principal in DocMgmt::Role::"editor", action == DocMgmt::Action::"READ", resource);`;
+const REBAC_POLICY = `permit(principal is DocMgmt::User, action == DocMgmt::Action::"READ", resource is DocMgmt::Document) when { principal in resource.owners };`;
 
-function makeStore(baseDir: string, name: string, policies: Record<string, string>): string {
+function makeStore(baseDir: string, name: string, policies: Record<string, string>, schema = SCHEMA_CEDARSCHEMA, schemaFile = "schema.cedarschema"): string {
   const path = join(baseDir, name);
   mkdirSync(join(path, "policies"), { recursive: true });
   for (const [id, content] of Object.entries(policies)) {
     writeFileSync(join(path, "policies", `${id}.cedar`), content);
   }
-  writeFileSync(join(path, "schema.cedarschema"), SCHEMA_CEDARSCHEMA);
+  writeFileSync(join(path, schemaFile), schema);
   return path;
-}
-
-// ─── Mock responses ───────────────────────────────────────────────────────────
-
-const PLAN_ABAC_ON_RBAC = {
-  intent_interpretation: "Add a business unit matching constraint to the existing read permission",
-  applicable_cedar_pattern: "Membership (RBAC) layered with ABAC condition",
-  affected_entities: {
-    principal_type: "DocMgmt::User",
-    action_ids: ["READ"],
-    resource_type: "DocMgmt::Document",
-  },
-  required_changes: [
-    {
-      step: 1,
-      type: "schema",
-      description: "Add optional home_business_unit attribute to User entity",
-      rationale: "Cedar policies can only reference schema-declared attributes.",
-      cedar_snippet: `entity User in [Role] { name: String, home_business_unit?: String };`,
-    },
-    {
-      step: 2,
-      type: "policy_modify",
-      policy_id: "editor",
-      description: "Add business unit matching condition to read permission",
-      rationale: "The when clause is mutable via AVP UpdatePolicy. No delete+recreate needed.",
-      cedar_snippet_before: EDITOR_POLICY,
-      cedar_snippet_after: `permit(principal in DocMgmt::Role::"editor", action == DocMgmt::Action::"READ", resource)\nwhen { principal has home_business_unit && principal.home_business_unit == resource.business_unit };`,
-      avp_update_mode: "in_place_via_update_policy",
-    },
-  ],
-  gotchas: [
-    {
-      id: "optional_attribute_guard",
-      severity: "high",
-      description: "home_business_unit is optional — must guard with `principal has home_business_unit` before access.",
-      avp_error_category: "UnsafeOptionalAttributeAccess",
-    },
-  ],
-  verification_next_steps: "Run cedar_diff_policy_stores against production to verify behavioral drift.",
-};
-
-const PLAN_FORBID_SENSITIVE = {
-  intent_interpretation: "Block everyone from accessing top-secret documents except admins",
-  applicable_cedar_pattern: "Discretionary forbid with Membership exemption",
-  affected_entities: {
-    principal_type: "DocMgmt::User",
-    action_ids: ["READ", "WRITE"],
-    resource_type: "DocMgmt::Document",
-  },
-  required_changes: [
-    {
-      step: 1,
-      type: "policy_new",
-      description: "Create forbid policy for top-secret documents with admin exemption",
-      rationale: "New policy — use AVP CreatePolicy.",
-      cedar_snippet: `forbid(principal, action, resource) when { resource.classification == "top_secret" } unless { principal in DocMgmt::Role::"admin" };`,
-      avp_update_mode: "new_policy_via_create_policy",
-    },
-  ],
-  gotchas: [
-    {
-      id: "forbid_overrides_permit",
-      severity: "high",
-      description: "A single forbid overrides all permit policies. The unless clause provides the admin escape hatch.",
-    },
-  ],
-  verification_next_steps: "Test with a non-admin user attempting to read a top_secret document.",
-};
-
-const DELTA_WEEKEND_BLOCK = {
-  delta_from_previous: true,
-  unchanged_steps: [1],
-  modified_steps: [
-    {
-      step: 2,
-      before: { step: 2, type: "policy_modify", description: "Add time window 09:00-17:00" },
-      after: { step: 2, type: "policy_modify", description: "Add time window 09:00-17:00 weekdays only" },
-      reason: "Extended condition to also block weekends",
-    },
-  ],
-  added_steps: [],
-  removed_steps: [],
-  intent_interpretation: "Restrict admin access to 09:00-17:00 weekdays only",
-  applicable_cedar_pattern: "Membership (RBAC) with temporal context guard",
-  affected_entities: { principal_type: "DocMgmt::User", action_ids: ["READ", "WRITE"], resource_type: "DocMgmt::Document" },
-  required_changes: [
-    { step: 1, type: "schema", description: "Add time-related context" },
-    {
-      step: 2,
-      type: "policy_modify",
-      description: "Add time window + weekend block condition",
-      avp_update_mode: "in_place_via_update_policy",
-    },
-  ],
-  gotchas: [],
-  verification_next_steps: "Test with context at different hours and days.",
-};
-
-// ─── Helper ───────────────────────────────────────────────────────────────────
-
-function mockSampler(response: unknown): Sampler {
-  return async () => JSON.stringify(response);
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-describe("cedar_advise", () => {
+describe("cedar_advise — context preparator (v2, no sampling)", () => {
   let tmpDir: string;
   let manager: StoreManager;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `cedar-advise-test-${Date.now()}`);
+    tmpDir = join(tmpdir(), `cedar-advise-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tmpDir, { recursive: true });
     manager = new StoreManager();
   });
@@ -147,272 +59,197 @@ describe("cedar_advise", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  // ─── Prompt structure ───────────────────────────────────────────────────────
+  // ─── Pivot guarantees: no sampler, deterministic, synchronous-shaped ────────
 
-  it("A1 — prompt contains Cedar patterns and AVP rules reference", async () => {
-    let capturedUser = "";
-    let capturedSystem = "";
-    const sampler: Sampler = async (up, sp) => {
-      capturedUser = up;
-      capturedSystem = sp;
-      return JSON.stringify(PLAN_ABAC_ON_RBAC);
-    };
-
-    await handleAdvise({ intent: "Restrict read to business unit match" }, sampler);
-
-    expect(capturedSystem).toContain("Cedar");
-    expect(capturedSystem).toContain("JSON");
-    expect(capturedUser).toContain("Cedar Policy Patterns");
-    expect(capturedUser).toContain("AVP UpdatePolicy");
-    expect(capturedUser).toContain("Restrict read to business unit match");
+  it("B1 — handleAdvise is a pure function: no sampler argument, no async LLM call", () => {
+    // The signature accepts (input, manager?) — no sampler. Calling it returns a value
+    // synchronously without awaiting any client LLM round-trip.
+    const result = handleAdvise({ intent: "test" });
+    expect(result).toBeDefined();
+    expect(result.tool).toBe("cedar_advise");
+    expect(result.bundle_version).toBe("v2");
   });
 
-  it("A2 — prompt selects optional_attribute_guard gotcha for email/verified intent", async () => {
-    let capturedUser = "";
-    const sampler: Sampler = async (up) => { capturedUser = up; return JSON.stringify(PLAN_ABAC_ON_RBAC); };
-
-    await handleAdvise({ intent: "Require verified email attribute before granting access" }, sampler);
-
-    expect(capturedUser).toContain("optional_attribute_guard");
+  it("B2 — deterministic: two calls with identical inputs return identical bundles", () => {
+    const a = handleAdvise({ intent: "Restrict read to verified email users" });
+    const b = handleAdvise({ intent: "Restrict read to verified email users" });
+    expect(a).toEqual(b);
   });
 
-  it("A3 — prompt selects forbid_overrides_permit gotcha for block/deny intent", async () => {
-    let capturedUser = "";
-    const sampler: Sampler = async (up) => { capturedUser = up; return JSON.stringify(PLAN_FORBID_SENSITIVE); };
+  // ─── Bundle universal payload (independent of store_ref) ────────────────────
 
-    await handleAdvise({ intent: "Block everyone from accessing sensitive documents" }, sampler);
-
-    expect(capturedUser).toContain("forbid_overrides_permit");
+  it("B3 — bundle echoes intent verbatim", () => {
+    const intent = "Only admins should delete top-secret documents";
+    const result = handleAdvise({ intent });
+    expect(result.intent).toBe(intent);
   });
 
-  // ─── Response parsing ────────────────────────────────────────────────────────
-
-  it("A4 — parses structured JSON response correctly", async () => {
-    const result = await handleAdvise({ intent: "Add ABAC constraint" }, mockSampler(PLAN_ABAC_ON_RBAC));
-
-    expect(result.error).toBeUndefined();
-    expect(result.intent_interpretation).toBeDefined();
-    expect(result.applicable_cedar_pattern).toContain("RBAC");
-    expect(result.required_changes).toHaveLength(2);
-    expect(result.required_changes![0]!.step).toBe(1);
-    expect(result.required_changes![0]!.type).toBe("schema");
-    expect(result.required_changes![1]!.avp_update_mode).toBe("in_place_via_update_policy");
-    expect(result.gotchas).toHaveLength(1);
-    expect(result.gotchas![0]!.severity).toBe("high");
+  it("B4 — bundle includes Cedar patterns reference with all four patterns", () => {
+    const result = handleAdvise({ intent: "anything" });
+    const names = result.cedar_patterns_reference.patterns.map(p => p.name);
+    expect(names).toEqual(expect.arrayContaining([
+      expect.stringMatching(/Membership/),
+      expect.stringMatching(/Relationship/),
+      expect.stringMatching(/Discretionary/),
+      expect.stringMatching(/Hybrid/),
+    ]));
+    expect(result.cedar_patterns_reference.summary).toContain("MEMBERSHIP");
   });
 
-  it("A5 — parses markdown-wrapped JSON response", async () => {
-    const sampler: Sampler = async () => `\`\`\`json\n${JSON.stringify(PLAN_ABAC_ON_RBAC)}\n\`\`\``;
-    const result = await handleAdvise({ intent: "test" }, sampler);
-
-    expect(result.error).toBeUndefined();
-    expect(result.intent_interpretation).toBeDefined();
-    expect(result.required_changes).toHaveLength(2);
+  it("B5 — bundle includes AVP UpdatePolicy rules with three buckets", () => {
+    const result = handleAdvise({ intent: "anything" });
+    expect(result.avp_update_policy_rules.in_place_via_update_policy.length).toBeGreaterThan(0);
+    expect(result.avp_update_policy_rules.requires_delete_recreate.length).toBeGreaterThan(0);
+    expect(result.avp_update_policy_rules.new_via_create_policy.length).toBeGreaterThan(0);
+    expect(result.avp_update_policy_rules.summary).toContain("UpdatePolicy");
   });
 
-  it("A6 — returns error with raw_response when sampler returns invalid JSON", async () => {
-    const sampler: Sampler = async () => "I cannot produce a structured plan for this intent.";
-    const result = await handleAdvise({ intent: "test" }, sampler);
-
-    expect(result.error).toMatch(/parse/i);
-    expect(result.raw_response).toBeDefined();
-    expect(result.raw_response).toContain("I cannot produce");
+  it("B6 — bundle includes AVP validation error catalog", () => {
+    const result = handleAdvise({ intent: "anything" });
+    const ids = result.avp_validation_error_catalog.map(e => e.id);
+    expect(ids).toContain("UnsafeOptionalAttributeAccess");
+    expect(ids).toContain("UnrecognizedEntityType");
+    expect(ids).toContain("MissingAttribute");
   });
 
-  // ─── Store context ───────────────────────────────────────────────────────────
+  it("B7 — bundle includes sequencing_guidance with schema-before-policy rule", () => {
+    const result = handleAdvise({ intent: "anything" });
+    expect(result.sequencing_guidance.length).toBeGreaterThan(0);
+    const joined = result.sequencing_guidance.join(" ");
+    expect(joined).toMatch(/schema.*before.*polic/i);
+  });
 
-  it("A7 — includes store context in prompt when store_ref provided", async () => {
+  it("B8 — bundle includes next_steps_for_llm directing follow-up tool calls", () => {
+    const result = handleAdvise({ intent: "anything" });
+    expect(result.next_steps_for_llm).toContain("cedar_validate");
+    expect(result.next_steps_for_llm).toContain("cedar_check_policy_change");
+  });
+
+  // ─── Gotcha selection from intent keywords ───────────────────────────────────
+
+  it("B9 — selects optional_attribute_guard gotcha for verified-email intent", () => {
+    const result = handleAdvise({
+      intent: "Require verified email attribute before granting read access",
+    });
+    const ids = result.applicable_gotchas.map(g => g.id);
+    expect(ids).toContain("optional_attribute_guard");
+  });
+
+  it("B10 — selects forbid_overrides_permit gotcha for block/deny intent", () => {
+    const result = handleAdvise({
+      intent: "Block all access to sensitive top-secret documents except admins",
+    });
+    const ids = result.applicable_gotchas.map(g => g.id);
+    expect(ids).toContain("forbid_overrides_permit");
+  });
+
+  it("B11 — selects rebac_migration_data gotcha for relationship/owners intent", () => {
+    const result = handleAdvise({
+      intent: "Migrate to per-resource owner-based access (owners attribute on Document)",
+    });
+    const ids = result.applicable_gotchas.map(g => g.id);
+    expect(ids).toContain("rebac_migration_data");
+  });
+
+  it("B12 — no gotcha keywords matched: applicable_gotchas is empty but bundle still valid", () => {
+    const result = handleAdvise({ intent: "xyzzy plugh frobnitz" });
+    expect(result.applicable_gotchas).toEqual([]);
+    // Universal sections still populated
+    expect(result.cedar_patterns_reference.patterns.length).toBeGreaterThan(0);
+    expect(result.avp_update_policy_rules.in_place_via_update_policy.length).toBeGreaterThan(0);
+  });
+
+  // ─── Store context handling ─────────────────────────────────────────────────
+
+  it("B13 — store_ref omitted: store_status='not_provided', no schema, empty inventory", () => {
+    const result = handleAdvise({ intent: "anything" });
+    expect(result.store_status).toBe("not_provided");
+    expect(result.store_name).toBeUndefined();
+    expect(result.schema_summary).toBeUndefined();
+    expect(result.policy_inventory).toEqual([]);
+    expect(result.patterns_detected_in_store).toEqual([]);
+  });
+
+  it("B14 — store_ref unknown: store_status='not_found', store_name preserved", () => {
+    const result = handleAdvise({ intent: "anything", store_ref: "nonexistent" }, manager);
+    expect(result.store_status).toBe("not_found");
+    expect(result.store_name).toBe("nonexistent");
+    expect(result.schema_summary).toBeUndefined();
+    expect(result.policy_inventory).toEqual([]);
+  });
+
+  it("B15 — store_ref loaded: bundle includes schema_summary, inventory, pattern counts", () => {
     const storePath = makeStore(tmpDir, "mystore", { admin: ADMIN_POLICY, editor: EDITOR_POLICY });
     manager.loadFromRoots([{ uri: `file://${storePath}`, name: "mystore" }]);
 
-    let capturedUser = "";
-    const sampler: Sampler = async (up) => { capturedUser = up; return JSON.stringify(PLAN_ABAC_ON_RBAC); };
+    const result = handleAdvise({ intent: "Add ABAC condition", store_ref: "mystore" }, manager);
 
-    await handleAdvise({ intent: "Add business unit constraint", store_ref: "mystore" }, sampler, manager);
-
-    expect(capturedUser).toContain("mystore");
-    expect(capturedUser).toContain("admin");
-    expect(capturedUser).toContain("editor");
-    expect(capturedUser).toContain("Schema:");
+    expect(result.store_status).toBe("loaded");
+    expect(result.store_name).toBe("mystore");
+    expect(result.schema_summary?.valid).toBe(true);
+    expect(result.schema_summary?.format).toBe("cedarschema");
+    expect(result.schema_summary?.namespaces).toContain("DocMgmt");
+    expect(result.policy_inventory).toHaveLength(2);
+    expect(result.policy_inventory.map(p => p.policy_id).sort()).toEqual(["admin", "editor"]);
+    // Both admin and editor use principal-in-Role → Membership pattern
+    const membershipCount = result.patterns_detected_in_store.find(p => p.pattern === "membership")?.count;
+    expect(membershipCount).toBe(2);
   });
 
-  it("A8 — resolves cedar:// store_ref prefix", async () => {
+  it("B16 — store_ref accepts cedar:// URI form", () => {
     const storePath = makeStore(tmpDir, "production", { admin: ADMIN_POLICY });
     manager.loadFromRoots([{ uri: `file://${storePath}`, name: "production" }]);
 
-    let capturedUser = "";
-    const sampler: Sampler = async (up) => { capturedUser = up; return JSON.stringify(PLAN_ABAC_ON_RBAC); };
-
-    await handleAdvise(
+    const result = handleAdvise(
       { intent: "Update policy", store_ref: "cedar://policies/production" },
-      sampler,
       manager
     );
 
-    expect(capturedUser).toContain("production");
+    expect(result.store_status).toBe("loaded");
+    expect(result.store_name).toBe("production");
   });
 
-  it("A9 — gracefully handles unknown store_ref", async () => {
-    let capturedUser = "";
-    const sampler: Sampler = async (up) => { capturedUser = up; return JSON.stringify(PLAN_ABAC_ON_RBAC); };
-
-    await handleAdvise({ intent: "test", store_ref: "nonexistent" }, sampler, manager);
-
-    expect(capturedUser).toContain("nonexistent");
-    expect(capturedUser).toContain("not found");
-  });
-
-  // ─── Delta / previous_plan ────────────────────────────────────────────────────
-
-  it("A10 — includes previous_plan in prompt and uses delta schema", async () => {
-    let capturedUser = "";
-    const sampler: Sampler = async (up) => { capturedUser = up; return JSON.stringify(DELTA_WEEKEND_BLOCK); };
-
-    const result = await handleAdvise({
-      intent: "Also block weekends",
-      previous_plan: PLAN_ABAC_ON_RBAC,
-    }, sampler);
-
-    expect(capturedUser).toContain("Previous Plan");
-    expect(capturedUser).toContain("delta");
-    expect(result.delta_from_previous).toBe(true);
-    expect(result.unchanged_steps).toContain(1);
-    expect(result.modified_steps).toHaveLength(1);
-  });
-
-  it("A11 — no previous_plan uses full plan schema (no delta fields in prompt)", async () => {
-    let capturedUser = "";
-    const sampler: Sampler = async (up) => { capturedUser = up; return JSON.stringify(PLAN_ABAC_ON_RBAC); };
-
-    await handleAdvise({ intent: "Fresh request" }, sampler);
-
-    expect(capturedUser).not.toContain("Previous Plan");
-    // Full output schema — not delta
-    expect(capturedUser).toContain("intent_interpretation");
-    expect(capturedUser).toContain("required_changes");
-  });
-
-  // ─── Forbid + unless pattern (Example 2) ────────────────────────────────────
-
-  it("A12 — forbid+unless plan: new policy classified as new_policy_via_create_policy", async () => {
-    const result = await handleAdvise(
-      { intent: "Block sensitive documents for non-admins" },
-      mockSampler(PLAN_FORBID_SENSITIVE)
-    );
-
-    expect(result.error).toBeUndefined();
-    expect(result.required_changes![0]!.avp_update_mode).toBe("new_policy_via_create_policy");
-    expect(result.gotchas!.some(g => g.id === "forbid_overrides_permit")).toBe(true);
-  });
-
-  // ─── Audit-gap fixes ──────────────────────────────────────────────────────────
-
-  it("A13 — store context includes actual policy text so LLM can produce cedar_snippet_before", async () => {
+  it("B17 — policy_inventory entries include full Cedar text so the LLM can quote exact scope", () => {
     const storePath = makeStore(tmpDir, "withtext", { admin: ADMIN_POLICY, editor: EDITOR_POLICY });
     manager.loadFromRoots([{ uri: `file://${storePath}`, name: "withtext" }]);
 
-    let capturedUser = "";
-    const sampler: Sampler = async (up) => { capturedUser = up; return JSON.stringify(PLAN_ABAC_ON_RBAC); };
+    const result = handleAdvise({ intent: "Modify editor permissions", store_ref: "withtext" }, manager);
 
-    await handleAdvise({ intent: "Add constraint", store_ref: "withtext" }, sampler, manager);
-
-    // The actual Cedar policy text must appear in the prompt so the LLM can reference it
-    expect(capturedUser).toContain('Role::"admin"');
-    expect(capturedUser).toContain('Role::"editor"');
+    const editor = result.policy_inventory.find(p => p.policy_id === "editor");
+    expect(editor).toBeDefined();
+    expect(editor!.policy_text).toContain('Role::"editor"');
+    expect(editor!.policy_text).toContain('Action::"READ"');
   });
 
-  it("A14 — LLM policy_new with wrong avp_update_mode is corrected to new_policy_via_create_policy", async () => {
-    const badPlan = {
-      ...PLAN_FORBID_SENSITIVE,
-      required_changes: [
-        {
-          ...PLAN_FORBID_SENSITIVE.required_changes[0],
-          type: "policy_new",
-          avp_update_mode: "in_place_via_update_policy",  // wrong
-        },
-      ],
-    };
-    const result = await handleAdvise({ intent: "block access" }, mockSampler(badPlan));
+  it("B18 — ReBAC policy classified as relationship pattern in patterns_detected_in_store", () => {
+    const storePath = makeStore(tmpDir, "rebac", { owner: REBAC_POLICY });
+    manager.loadFromRoots([{ uri: `file://${storePath}`, name: "rebac" }]);
 
-    expect(result.required_changes![0]!.avp_update_mode).toBe("new_policy_via_create_policy");
+    const result = handleAdvise({ intent: "Audit ReBAC policies", store_ref: "rebac" }, manager);
+
+    const relationshipCount = result.patterns_detected_in_store.find(p => p.pattern === "relationship")?.count;
+    expect(relationshipCount).toBe(1);
   });
 
-  it("A15 — LLM policy_delete with wrong avp_update_mode is corrected to requires_delete_recreate", async () => {
-    const badPlan = {
-      ...PLAN_ABAC_ON_RBAC,
-      required_changes: [
-        {
-          step: 1,
-          type: "policy_delete",
-          description: "Remove old editor policy",
-          avp_update_mode: "in_place_via_update_policy",  // wrong
-        },
-      ],
-    };
-    const result = await handleAdvise({ intent: "migrate to rebac" }, mockSampler(badPlan));
+  it("B19 — JSON-format schema parsed and summarized correctly", () => {
+    const storePath = makeStore(tmpDir, "jsonstore", { admin: ADMIN_POLICY }, SCHEMA_JSON, "schema.json");
+    manager.loadFromRoots([{ uri: `file://${storePath}`, name: "jsonstore" }]);
 
-    expect(result.required_changes![0]!.avp_update_mode).toBe("requires_delete_recreate");
+    const result = handleAdvise({ intent: "anything", store_ref: "jsonstore" }, manager);
+
+    expect(result.schema_summary?.valid).toBe(true);
+    expect(result.schema_summary?.format).toBe("json");
+    expect(result.schema_summary?.namespaces).toEqual(["DocMgmt"]);
+    expect(result.schema_summary?.entity_type_count).toBe(3);
+    expect(result.schema_summary?.action_count).toBe(2);
   });
 
-  it("A16 — schema step ordering: adds warning when policy step precedes schema step", async () => {
-    const misordered = {
-      ...PLAN_ABAC_ON_RBAC,
-      required_changes: [
-        { step: 1, type: "policy_modify", description: "Modify policy first", avp_update_mode: "in_place_via_update_policy" },
-        { step: 2, type: "schema", description: "Add attribute second (wrong order)" },
-      ],
-    };
-    const result = await handleAdvise({ intent: "add attribute" }, mockSampler(misordered));
+  // ─── MCP tool description contract (for the bypass-prevention case) ─────────
 
-    // Should have a gotcha warning about ordering
-    expect(result.gotchas!.some(g => g.id === "schema_first_then_policy")).toBe(true);
-  });
-
-  // ─── Snippet validation (Phase 4 audit gap) ──────────────────────────────────
-
-  it("A17 — invalid cedar_snippet in policy_new step surfaces as high-severity gotcha", async () => {
-    const planWithBadSnippet = {
-      ...PLAN_FORBID_SENSITIVE,
-      required_changes: [
-        {
-          step: 1,
-          type: "policy_new",
-          description: "New policy with broken Cedar syntax",
-          cedar_snippet: "this is not valid cedar !!@#$",
-          avp_update_mode: "new_policy_via_create_policy",
-        },
-      ],
-      gotchas: [],
-    };
-
-    const result = await handleAdvise({ intent: "add policy" }, mockSampler(planWithBadSnippet));
-
-    expect(result.error).toBeUndefined();
-    const snippetGotcha = result.gotchas?.find(g => g.id === "invalid_cedar_snippet_in_plan");
-    expect(snippetGotcha).toBeDefined();
-    expect(snippetGotcha!.severity).toBe("high");
-    expect(snippetGotcha!.description).toContain("cedar_snippet");
-  });
-
-  it("A18 — valid cedar_snippet in policy_new step does not surface invalid snippet gotcha", async () => {
-    const planWithGoodSnippet = {
-      ...PLAN_FORBID_SENSITIVE,
-      required_changes: [
-        {
-          step: 1,
-          type: "policy_new",
-          description: "New policy with valid Cedar",
-          cedar_snippet: `permit(principal in DocMgmt::Role::"admin", action, resource);`,
-          avp_update_mode: "new_policy_via_create_policy",
-        },
-      ],
-      gotchas: [],
-    };
-
-    const result = await handleAdvise({ intent: "add policy" }, mockSampler(planWithGoodSnippet));
-
-    expect(result.error).toBeUndefined();
-    const snippetGotcha = result.gotchas?.find(g => g.id === "invalid_cedar_snippet_in_plan");
-    expect(snippetGotcha).toBeUndefined();
+  it("B20 — bundle is self-describing: tool name + version + intent recorded for downstream auditing", () => {
+    const result = handleAdvise({ intent: "Add a deletion permission" });
+    expect(result.tool).toBe("cedar_advise");
+    expect(result.bundle_version).toBe("v2");
+    expect(result.intent).toBe("Add a deletion permission");
   });
 });
