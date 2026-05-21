@@ -2,6 +2,7 @@
 
 `cedar-mcp-server` is an MCP server that puts Cedar policy tooling directly inside your AI assistant conversation. It covers the full Cedar policy lifecycle: validate policies, simulate authorization decisions, plan changes against AVP constraints, and diff two policy stores for blue/green deployment. Cedar 4.11.0 runs in-process via WASM, so there's nothing to install beyond `npx`.
 
+[![CI](https://github.com/Pigius/cedar-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/Pigius/cedar-mcp-server/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/cedar-mcp-server)](https://www.npmjs.com/package/cedar-mcp-server)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue)](https://www.typescriptlang.org/)
