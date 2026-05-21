@@ -227,4 +227,24 @@ describe("integration smoke", () => {
     }
     expect(failures, failures.join("\n")).toEqual([]);
   }, 15_000);
+
+  it("S5 — server returns instructions on initialize: routing table + anti-bypass directive, under 2KB", async () => {
+    const conn = makeClient();
+    client = conn.client;
+    transport = conn.transport;
+    await client.connect(transport);
+
+    const instructions = client.getInstructions();
+    expect(instructions, "server instructions are missing — client received none on initialize").toBeDefined();
+    const text = instructions!;
+    // Stay under the Claude Code 2KB truncation budget with headroom
+    expect(text.length).toBeLessThan(2048);
+    expect(text.length).toBeGreaterThan(500);
+    // Critical guidance must be front-loaded (within the first ~400 chars)
+    expect(text.slice(0, 600)).toMatch(/MUST call the appropriate cedar_\* tool/);
+    // Routing table includes cedar_advise as the first-call directive for change planning
+    expect(text).toMatch(/cedar_advise FIRST/);
+    // Anti-bypass directive present
+    expect(text).toMatch(/Do NOT use Read or Bash to inspect Cedar policy semantics/);
+  }, 15_000);
 });

@@ -25,10 +25,41 @@ import { PROMPT_DEFINITIONS } from "./prompts/index.js";
 export const SERVER_NAME = "cedar-mcp-server";
 export const SERVER_VERSION = "0.0.1";
 
+/**
+ * Server-level instructions returned in the MCP `initialize` response. Surfaced
+ * by the client (Claude Code, Claude Desktop, Cursor) as a system-prompt hint
+ * for when to reach for this server's tools. Truncated at 2KB in Claude Code,
+ * so critical routing guidance is front-loaded.
+ *
+ * Added in response to the 2026-05-21 falsification test result: tool-level
+ * descriptions alone (kickoff-08 sub-phase 8b) did not stop Claude from
+ * bypassing the cedar_* tools via Read + Bash. See
+ * projects/cedar-mcp-server/research-mcp-discoverability-patterns.md
+ * "Path 0" for the rationale.
+ */
+export const SERVER_INSTRUCTIONS = `cedar-mcp-server provides Cedar policy language and AWS Verified Permissions tooling.
+
+For ANY question about Cedar policies, schemas, entities, or authorization decisions, you MUST call the appropriate cedar_* tool rather than reading files and reasoning natively. The Cedar engine, AST parser, and AVP rules encoded in this server are the authoritative source; reading .cedar files alone is insufficient because pattern classification, policy evaluation, AVP UpdatePolicy mutability, and gotchas catalog cannot be reconstructed from file text.
+
+Tool routing:
+- "Plan a Cedar change" / "how do I add X rule" / "help me restrict Y" -> cedar_advise FIRST. Returns structured context bundle (gotchas, AVP rules, Cedar patterns, current policy classification). Reason from the bundle.
+- "What does this policy do?" / "explain this Cedar" -> cedar_explain
+- "Is this policy valid?" / "check my Cedar syntax" -> cedar_validate
+- "Would X be allowed to do Y on Z?" / "test this authorization" -> cedar_authorize
+- "Compare two policy stores" / "is it safe to deploy" -> cedar_diff_policy_stores
+- "Why was X denied?" -> cedar_authorize then cedar_explain (positional policy IDs need explanation lookup)
+- "Generate a test payload" -> cedar_generate_sample_request
+- "Migrating from AVP" / "is my schema AVP-compatible" -> cedar_project_intelligence (when shipped) or cedar_validate_schema
+- "Modify an existing policy" -> cedar_check_policy_change FIRST (returns AVP UpdatePolicy classification)
+
+Do NOT use Read or Bash to inspect Cedar policy semantics. The server tools encode Cedar/AVP knowledge that does not live in the files.`;
+
 export function createServer(): McpServer {
   const server = new McpServer({
     name: SERVER_NAME,
     version: SERVER_VERSION,
+  }, {
+    instructions: SERVER_INSTRUCTIONS,
   });
 
   server.tool(
