@@ -3,7 +3,7 @@
  * need a real spawned process live in test/integration/smoke.test.ts
  * (S6, S6b, S6c). These exercise the helpers directly.
  */
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -13,8 +13,14 @@ import { storeManager } from "../src/resources/store-manager.js";
 describe("populateCwdFallback — kickoff-12 sync cwd-fallback (Round 5 Scenario E fix)", () => {
   const tempDirs: string[] = [];
 
+  beforeEach(() => {
+    // Reset the singleton so a polluted state from a prior test or a
+    // file-parallel sibling cannot mask a real bug here. 12b audit
+    // Finding 3 (test fragility).
+    storeManager.loadFromRoots([]);
+  });
+
   afterEach(() => {
-    // Reset the singleton so per-test state never leaks.
     storeManager.loadFromRoots([]);
     while (tempDirs.length > 0) {
       const dir = tempDirs.pop()!;
@@ -22,27 +28,27 @@ describe("populateCwdFallback — kickoff-12 sync cwd-fallback (Round 5 Scenario
     }
   });
 
-  it("returns true and loads the store when cwd has schema.cedarschema", () => {
+  it("returns a root descriptor and loads the store when cwd has schema.cedarschema", () => {
     const dir = mkdtempSync(join(tmpdir(), "cedar-sync-schema-"));
     tempDirs.push(dir);
     writeFileSync(join(dir, "schema.cedarschema"), `namespace DocMgmt {}`);
 
     const loaded = populateCwdFallback(dir);
 
-    expect(loaded).toBe(true);
+    expect(loaded).toEqual({ uri: `file://${dir}`, name: basename(dir) });
     expect(storeManager.listStoreNames()).toEqual([basename(dir)]);
   });
 
-  it("returns true and loads the store when cwd has schema.json", () => {
+  it("returns a root descriptor and loads the store when cwd has schema.json", () => {
     const dir = mkdtempSync(join(tmpdir(), "cedar-sync-json-"));
     tempDirs.push(dir);
     writeFileSync(join(dir, "schema.json"), `{"DocMgmt":{}}`);
 
-    expect(populateCwdFallback(dir)).toBe(true);
+    expect(populateCwdFallback(dir)).not.toBeNull();
     expect(storeManager.listStoreNames()).toEqual([basename(dir)]);
   });
 
-  it("returns true and loads the store when cwd has only a policies/ directory (no schema)", () => {
+  it("returns a root descriptor and loads the store when cwd has only a policies/ directory (no schema)", () => {
     // This matches the 11d-audit Probe B scenario. populateCwdFallback fires;
     // cedar_advise's downstream auto-resolve then handles the schemaless case
     // via the `not_provided` degrade path landed in commit 0f35740.
@@ -50,16 +56,16 @@ describe("populateCwdFallback — kickoff-12 sync cwd-fallback (Round 5 Scenario
     tempDirs.push(dir);
     mkdirSync(join(dir, "policies"));
 
-    expect(populateCwdFallback(dir)).toBe(true);
+    expect(populateCwdFallback(dir)).not.toBeNull();
     expect(storeManager.listStoreNames()).toEqual([basename(dir)]);
   });
 
-  it("returns false and leaves StoreManager untouched when cwd does not look like a Cedar workspace", () => {
+  it("returns null and leaves StoreManager untouched when cwd does not look like a Cedar workspace", () => {
     const dir = mkdtempSync(join(tmpdir(), "cedar-sync-empty-"));
     tempDirs.push(dir);
     // Empty directory — no schema.cedarschema, no schema.json, no policies/.
 
-    expect(populateCwdFallback(dir)).toBe(false);
+    expect(populateCwdFallback(dir)).toBeNull();
     expect(storeManager.listStoreNames()).toEqual([]);
   });
 
@@ -77,5 +83,14 @@ describe("populateCwdFallback — kickoff-12 sync cwd-fallback (Round 5 Scenario
     const names = storeManager.listStoreNames();
 
     expect(names).toEqual([basename(dir)]);
+  });
+
+  it("returns null when cwd is the filesystem root (12b audit Finding 2 — sandbox-bypass guard)", () => {
+    // cwd === "/" → store.path would normalize to "" → isPathAllowed would
+    // return true for every filesystem path (because `"<anything>".startsWith("")`
+    // is true). populateCwdFallback rejects this case explicitly; StoreManager
+    // also rejects empty-rawPath roots as a second defense layer.
+    expect(populateCwdFallback("/")).toBeNull();
+    expect(storeManager.listStoreNames()).toEqual([]);
   });
 });

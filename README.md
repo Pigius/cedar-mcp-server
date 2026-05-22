@@ -1184,7 +1184,7 @@ CLI flags:
 
 ### Roots in stdio vs HTTP mode
 
-In stdio mode, your MCP client advertises its workspace folders to the server automatically via the `listRoots()` protocol. You do not need the `--root` flag at all; the server queries the client on initialize and loads any directories that look like Cedar policy stores. If you pass `--root` to the stdio binary, the server exits at startup with an error message saying `--root` is HTTP-only. This is intentional: in stdio, the client is the authority on what is in scope.
+In stdio mode, your MCP client advertises its workspace folders to the server automatically via the `listRoots()` protocol. You do not need the `--root` flag at all; the server queries the client on initialize and loads each advertised root as a named policy store. If you pass `--root` to the stdio binary, the server exits at startup with an error message saying `--root` is HTTP-only. This is intentional: in stdio, the client is the authority on what is in scope.
 
 Not every stdio client advertises the workspace as a root. Claude Code currently does not. If the server's working directory itself looks like a Cedar policy store (one of `schema.cedarschema`, `schema.json`, or a `policies/` directory exists), the server loads the cwd as a store named after the cwd's basename **synchronously at startup, before the transport accepts any client requests**. By the time the client can send anything (including `resources/list`), the store is already populated. This is the "user opens an MCP-enabled CLI inside their Cedar repo and expects the tools to work" path.
 

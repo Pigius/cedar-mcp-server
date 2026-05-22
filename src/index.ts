@@ -24,7 +24,8 @@ function looksLikeCedarWorkspace(path: string): boolean {
 
 /**
  * Synchronously populate StoreManager with the cwd-fallback store, if the
- * cwd looks like a Cedar workspace. Returns true when a store was loaded.
+ * cwd looks like a Cedar workspace. Returns the loaded root descriptor when
+ * a store was loaded, or null otherwise.
  *
  * Round 5 dogfood (Scenario E) found that emitting `notifications/resources/list_changed`
  * AFTER an async cwd-fallback (kickoff-11 11a) was insufficient: Claude Code's
@@ -37,13 +38,22 @@ function looksLikeCedarWorkspace(path: string): boolean {
  * need to wait for the transport. By the time the client can send any
  * request, the store already exists.
  *
+ * Security: rejects filesystem-root cwds (`/`) and any cwd whose basename is
+ * empty after normalization. Without this guard, the cwd-fallback would push
+ * an empty-path root into StoreManager, and the per-store path sandbox
+ * (`isPathAllowed`, which uses `startsWith(store.path)`) would return true
+ * for every filesystem path. StoreManager.loadFromRoots also refuses
+ * empty-path roots as a second layer of defense, but rejecting here keeps
+ * the cwd-fallback's intent narrow (workspace-shaped cwds only).
+ *
  * Exported so unit tests can exercise it without spawning a stdio process.
  */
-export function populateCwdFallback(cwd: string): boolean {
-  if (!looksLikeCedarWorkspace(cwd)) return false;
-  const cwdRoot = { uri: `file://${cwd}`, name: basename(cwd) || "workspace" };
+export function populateCwdFallback(cwd: string): { uri: string; name: string } | null {
+  if (cwd === "/" || basename(cwd).length === 0) return null;
+  if (!looksLikeCedarWorkspace(cwd)) return null;
+  const cwdRoot = { uri: `file://${cwd}`, name: basename(cwd) };
   storeManager.loadFromRoots([cwdRoot]);
-  return true;
+  return cwdRoot;
 }
 
 interface ParsedArgs {
@@ -174,15 +184,17 @@ async function loadRootsStdio(server: Awaited<ReturnType<typeof createServer>>) 
   if (clientRoots.length > 0) {
     storeManager.loadFromRoots(clientRoots);
     console.error(`[cedar-mcp-server] Loaded ${clientRoots.length} root(s) from MCP client: ${clientRoots.map((r) => r.uri).join(", ")} (replaces any sync-loaded cwd-fallback).`);
-  } else if (populateCwdFallback(process.cwd())) {
-    const name = basename(process.cwd()) || "workspace";
-    console.error(`[cedar-mcp-server] MCP client advertised 0 roots; using cwd-fallback store "${name}" (re-derived).`);
   } else {
-    storeManager.loadFromRoots([]);
-    if (clientSupportsRoots) {
-      console.error("[cedar-mcp-server] MCP client returned 0 roots and cwd does not look like a Cedar workspace (no schema.cedarschema, schema.json, or policies/ dir). Cedar tools will require inline inputs.");
+    const fallback = populateCwdFallback(process.cwd());
+    if (fallback) {
+      console.error(`[cedar-mcp-server] MCP client advertised 0 roots; using cwd-fallback store "${fallback.name}" (re-derived).`);
     } else {
-      console.error("[cedar-mcp-server] MCP client does not support roots/list and cwd does not look like a Cedar workspace. Cedar tools will require inline inputs.");
+      storeManager.loadFromRoots([]);
+      if (clientSupportsRoots) {
+        console.error("[cedar-mcp-server] MCP client returned 0 roots and cwd does not look like a Cedar workspace (no schema.cedarschema, schema.json, or policies/ dir). Cedar tools will require inline inputs.");
+      } else {
+        console.error("[cedar-mcp-server] MCP client does not support roots/list and cwd does not look like a Cedar workspace. Cedar tools will require inline inputs.");
+      }
     }
   }
 
@@ -212,9 +224,9 @@ async function runStdio(): Promise<void> {
   // future commit adds a top-level policies/ directory (for examples or
   // similar) the fallback would self-load. Flag in CHANGELOG if that
   // ever happens.
-  if (populateCwdFallback(process.cwd())) {
-    const name = basename(process.cwd()) || "workspace";
-    console.error(`[cedar-mcp-server] Synchronously auto-loaded cwd as workspace store: "${name}" (file://${process.cwd()}). StoreManager populated before transport accepts requests.`);
+  const loaded = populateCwdFallback(process.cwd());
+  if (loaded) {
+    console.error(`[cedar-mcp-server] Synchronously auto-loaded cwd as workspace store: "${loaded.name}" (${loaded.uri}). StoreManager populated before transport accepts requests.`);
   }
 
   const transport = new StdioServerTransport();

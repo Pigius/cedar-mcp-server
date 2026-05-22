@@ -35,6 +35,17 @@ export class StoreManager {
         continue;
       }
       const rawPath = root.uri.replace(/^file:\/\//, "").replace(/\/$/, "");
+      // Security: refuse to load a root that resolves to an empty filesystem
+      // path (uri === "file:///" or similar). isPathAllowed below uses
+      // `startsWith(store.path)`, and `<anything>.startsWith("")` is true,
+      // so an empty-path store would silently let every Cedar file operation
+      // touch any path on the filesystem. The fix is defense-in-depth: this
+      // skips at the StoreManager boundary regardless of which caller
+      // (cwd-fallback, --root flag, or client listRoots) produced the URI.
+      if (rawPath.length === 0) {
+        console.error(`[cedar-mcp-server] Refusing to load root with empty path after URI normalization (uri: "${root.uri}"). Filesystem-root URIs (file:///) are unsafe — they would bypass the per-store path sandbox.`);
+        continue;
+      }
       const baseName = root.name ?? basename(rawPath) ?? "default";
 
       // Disambiguate collisions with a numeric suffix
