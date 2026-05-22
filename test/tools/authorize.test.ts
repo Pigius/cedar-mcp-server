@@ -615,6 +615,45 @@ describe("cedar_authorize — 10d auto-discovery", () => {
     });
   });
 
+  it("does NOT claim entities_from when the store has no entities/ directory (audit finding)", async () => {
+    // Post-phase audit probe: a workspace store without an entities/
+    // subdirectory makes readAllEntities return "[]" silently. The earlier
+    // wrapper would still set auto_discovered.entities_from = <store>, lying
+    // about the source. Decisions evaluated against zero entities are nearly
+    // always wrong (a "permit in Role::admin" rule cannot fire if no Role
+    // entities exist), so the response must accurately reflect that no
+    // entities came from the workspace.
+    const dir = mkdtempSync(join(tmpdir(), "cedar-authorize-no-entities-"));
+    tempDirs.push(dir);
+    mkdirSync(join(dir, "policies"), { recursive: true });
+    writeFileSync(
+      join(dir, "policies", "always-permit.cedar"),
+      `permit (principal, action, resource);`,
+    );
+    writeFileSync(join(dir, "schema.cedarschema"), SCHEMA_TEXT);
+    // NOTE: no entities/ subdirectory on purpose.
+
+    storeManager.loadFromRoots([{ uri: `file://${dir}`, name: "no-entities-store" }]);
+
+    const outcome = await handleAuthorizeMcp(
+      {
+        principal: 'DocMgmt::User::"alice"',
+        action: 'DocMgmt::Action::"READ"',
+        resource: 'DocMgmt::Document::"doc-public"',
+      },
+      noResolve,
+    );
+
+    expect("error" in outcome).toBe(false);
+    if ("error" in outcome) return;
+    expect(outcome.result.auto_discovered).toEqual({
+      policies_from: "no-entities-store",
+      schema_from: "no-entities-store",
+      // entities_from intentionally absent: the store has no entities/
+    });
+    expect(outcome.result.auto_discovered?.entities_from).toBeUndefined();
+  });
+
   it("returns an ambiguity error when multiple stores are loaded and no store is passed", async () => {
     const blue = makeWorkspace();
     const green = makeWorkspace();

@@ -421,9 +421,18 @@ export async function handleAuthorizeMcp(
     entities = resolved.content;
   }
   if (!entities && autoStore) {
+    // Only claim entities_from if the store actually has an entities/
+    // subdirectory with files. readAllEntities returns "[]" when the
+    // directory is missing, which would otherwise have us lie in
+    // auto_discovered.entities_from about the source of zero entities.
     try {
-      entities = storeManager.readAllEntities(autoStore);
-      entitiesFrom = autoStore;
+      const entityFiles = storeManager.listEntities(autoStore);
+      if (entityFiles.length > 0) {
+        entities = storeManager.readAllEntities(autoStore);
+        entitiesFrom = autoStore;
+      } else {
+        entities = "[]";
+      }
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) };
     }
