@@ -14,6 +14,21 @@ export interface ValidateInput {
    * when callers invoke it directly without going through the MCP layer.
    */
   store?: string;
+  /**
+   * 11c opt-in: explicitly select the validation mode rather than letting
+   * schema presence decide it.
+   *
+   * "auto" (default): schema presence picks the mode. With a schema (inline
+   *   or auto-discovered from a single loaded store), run syntax_and_schema.
+   *   Without one, run syntax_only.
+   * "syntax_only": always parser-only. Skip workspace auto-discovery and
+   *   ignore any inline schema. Useful when the user explicitly says "I have
+   *   no schema" or wants a fast syntax sanity check.
+   * "syntax_and_schema": require a schema. If neither an inline schema nor
+   *   one resolvable from a loaded store is available, return a clear error
+   *   rather than silently dropping to syntax_only.
+   */
+  validation_mode?: "auto" | "syntax_only" | "syntax_and_schema";
 }
 
 export interface ValidateError {
@@ -157,7 +172,51 @@ function locationFor(err: DetailedError, source: string): { line: number; column
   return offsetToLineCol(source, loc.start);
 }
 
+/** Parser-only validation. Used by mode="syntax_only" and by mode="auto" when no schema is resolvable. */
+function parseOnlyResult(policies: string): ValidateResult {
+  const parseAnswer = checkParsePolicySet({ staticPolicies: policies });
+  if (parseAnswer.type === "failure") {
+    return {
+      valid: false,
+      errors: parseAnswer.errors.map((e) => {
+        const loc = locationFor(e, policies);
+        const hint = typoHint(e.message) ?? e.help ?? null;
+        const base: ValidateError = {
+          policy_id: "",
+          message: e.message,
+          hint,
+        };
+        if (loc) {
+          base.line = loc.line;
+          base.column = loc.column;
+        }
+        return base;
+      }),
+      warnings: [],
+      policy_count: countPolicies(policies),
+      validation_mode: "syntax_only",
+    };
+  }
+  return {
+    valid: true,
+    errors: [],
+    warnings: [],
+    policy_count: countPolicies(policies),
+    validation_mode: "syntax_only",
+  };
+}
+
 export async function handleValidate(input: ValidateInput): Promise<ValidateResult> {
+  const mode = input.validation_mode ?? "auto";
+
+  // 11c: explicit syntax_only short-circuits every schema path. The caller
+  // said "I have no schema" or "I want a parse-only check"; we honor that
+  // even when an inline schema is present and even when a workspace store
+  // is loaded.
+  if (mode === "syntax_only") {
+    return parseOnlyResult(input.policies);
+  }
+
   // 10d workspace auto-discovery. When the caller supplies no schema, consult
   // the StoreManager. Single-store deployments pull the schema implicitly so
   // the validate flow upgrades from syntax-only to syntax_and_schema without
@@ -181,7 +240,7 @@ export async function handleValidate(input: ValidateInput): Promise<ValidateResu
           }],
           warnings: [],
           policy_count: countPolicies(input.policies),
-          validation_mode: "syntax_only",
+          validation_mode: mode === "syntax_and_schema" ? "syntax_and_schema" : "syntax_only",
         };
       }
     } else {
@@ -203,47 +262,37 @@ export async function handleValidate(input: ValidateInput): Promise<ValidateResu
           }],
           warnings: [],
           policy_count: countPolicies(input.policies),
-          validation_mode: "syntax_only",
+          validation_mode: mode === "syntax_and_schema" ? "syntax_and_schema" : "syntax_only",
         };
       }
     }
   }
 
-  // Syntax-only mode: no schema supplied. Run the parser alone so the caller
-  // can sanity-check a snippet without having to construct a schema first.
-  // Maps any parse failure to the same ValidateError shape the full-validate
-  // path uses, so downstream consumers do not need a separate branch.
-  if (schemaText === undefined) {
-    const parseAnswer = checkParsePolicySet({ staticPolicies: input.policies });
-    if (parseAnswer.type === "failure") {
-      return {
-        valid: false,
-        errors: parseAnswer.errors.map((e) => {
-          const loc = locationFor(e, input.policies);
-          const hint = typoHint(e.message) ?? e.help ?? null;
-          const base: ValidateError = {
-            policy_id: "",
-            message: e.message,
-            hint,
-          };
-          if (loc) {
-            base.line = loc.line;
-            base.column = loc.column;
-          }
-          return base;
-        }),
-        warnings: [],
-        policy_count: countPolicies(input.policies),
-        validation_mode: "syntax_only",
-      };
-    }
+  // 11c: explicit syntax_and_schema requires a schema. After both inline and
+  // auto-discovery paths, if there is still no schema, the caller asked for a
+  // mode we cannot honor. Return a clear error rather than silently dropping
+  // to syntax_only (which is exactly the Round 4 Scenario I friction).
+  if (mode === "syntax_and_schema" && schemaText === undefined) {
     return {
-      valid: true,
-      errors: [],
+      valid: false,
+      errors: [{
+        policy_id: "",
+        message: 'validation_mode "syntax_and_schema" requires a schema, but none was provided and none could be auto-discovered. Pass schema, schema_ref, or store, or use validation_mode "auto" / "syntax_only".',
+        hint: null,
+      }],
       warnings: [],
       policy_count: countPolicies(input.policies),
-      validation_mode: "syntax_only",
+      validation_mode: "syntax_and_schema",
     };
+  }
+
+  // Syntax-only mode: no schema supplied (mode === "auto" with no resolvable
+  // schema). Run the parser alone so the caller can sanity-check a snippet
+  // without having to construct a schema first. Maps any parse failure to
+  // the same ValidateError shape the full-validate path uses, so downstream
+  // consumers do not need a separate branch.
+  if (schemaText === undefined) {
+    return parseOnlyResult(input.policies);
   }
 
   const schema = parseSchema(schemaText);
@@ -332,6 +381,7 @@ export interface ValidateMcpInput {
   schema?: string;
   schema_ref?: string;
   store?: string;
+  validation_mode?: "auto" | "syntax_only" | "syntax_and_schema";
 }
 
 /**
@@ -352,6 +402,17 @@ export async function handleValidateMcp(
     policies = resolved.content;
   }
   if (!policies) return { error: "Either policies or policy_ref is required" };
+
+  const mode = input.validation_mode ?? "auto";
+
+  // 11c: explicit syntax_only short-circuits all schema work at the wrapper
+  // level too. The user said parser-only; don't read schema_ref off disk,
+  // don't auto-discover, don't error on a missing schema. Pass straight to
+  // handleValidate which knows to run parseOnlyResult.
+  if (mode === "syntax_only") {
+    const result = await handleValidate({ policies, validation_mode: "syntax_only" });
+    return { result };
+  }
 
   let schema = input.schema;
   if (!schema && input.schema_ref) {
@@ -376,7 +437,8 @@ export async function handleValidateMcp(
           schema = storeManager.readSchema(def.store.name);
           autoSchemaFrom = def.store.name;
         } catch {
-          // Store has no schema file; validate stays in syntax-only mode.
+          // Store has no schema file; validate stays in syntax-only mode (auto)
+          // or errors out below in syntax_and_schema mode.
         }
       } else if (def.kind === "ambiguous") {
         return { error: `Multiple stores are loaded (${def.names.join(", ")}). Pass store: "<name>" to choose.` };
@@ -384,7 +446,7 @@ export async function handleValidateMcp(
     }
   }
 
-  const result = await handleValidate({ policies, schema });
+  const result = await handleValidate({ policies, schema, validation_mode: mode });
   if (autoSchemaFrom) {
     result.auto_discovered = { schema_from: autoSchemaFrom };
   }

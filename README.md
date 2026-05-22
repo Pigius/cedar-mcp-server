@@ -252,8 +252,15 @@ The response's `validation_mode` field tells you which mode ran.
 | `policy_ref` | no | `cedar://` URI pointing to a policy in a configured store |
 | `schema_ref` | no | `cedar://` URI pointing to a schema in a configured store |
 | `store` | no | Store name (a configured MCP root). Use to disambiguate auto-discovery when multiple stores are loaded. |
+| `validation_mode` | no | One of `"auto"` (default), `"syntax_only"`, or `"syntax_and_schema"`. See "Forcing a mode" below. |
 
 **Workspace auto-discovery.** When `schema` and `schema_ref` are both omitted and exactly one MCP root is loaded, the tool reads the schema from that store and upgrades the run to `syntax_and_schema` mode. The response's `auto_discovered.schema_from` field names the source store. With multiple stores loaded, the response is an actionable error listing the candidate names. Pass `store: "<name>"` to choose one.
+
+**Forcing a mode.** Set `validation_mode` when the default schema-presence heuristic isn't what you want.
+
+- `"auto"` (default): schema presence picks the mode, as described above.
+- `"syntax_only"`: parser-only. Skips workspace auto-discovery entirely and ignores any inline schema you pass. Use when the user explicitly says they have no schema, or for a fast parse-only sanity check inside a Cedar-workspace cwd.
+- `"syntax_and_schema"`: require a schema. If neither an inline schema nor a workspace schema is resolvable, the response is an error rather than a silent drop to syntax-only. Use when you want to be sure the type-check ran.
 
 ```json
 // request: { "policies": "permit (principal in DocMgmt::Role::\"admin\", action, resource);" }

@@ -237,3 +237,95 @@ describe("cedar_validate — 10d auto-discovery", () => {
     expect(result.validation_mode).toBe("syntax_only");
   });
 });
+
+describe("cedar_validate — 11c explicit validation_mode opt-in", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(() => {
+    storeManager.loadFromRoots([]);
+    while (tempDirs.length > 0) {
+      const dir = tempDirs.pop()!;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("validation_mode='auto' (default explicit) behaves like the existing auto-discovery path", async () => {
+    const storePath = makeAutoDiscoveryStore("workspace-auto");
+    tempDirs.push(storePath);
+    storeManager.loadFromRoots([{ uri: `file://${storePath}`, name: "workspace-auto" }]);
+
+    const result = await handleValidate({ policies: POLICIES, validation_mode: "auto" });
+
+    expect(result.valid).toBe(true);
+    expect(result.validation_mode).toBe("syntax_and_schema");
+    expect(result.auto_discovered).toEqual({ schema_from: "workspace-auto" });
+  });
+
+  it("validation_mode='syntax_only' forces parser-only and skips workspace auto-discovery even when a store is loaded", async () => {
+    const storePath = makeAutoDiscoveryStore("workspace-bypass");
+    tempDirs.push(storePath);
+    storeManager.loadFromRoots([{ uri: `file://${storePath}`, name: "workspace-bypass" }]);
+
+    const result = await handleValidate({
+      policies: `permit (principal, action, resource);`,
+      validation_mode: "syntax_only",
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.validation_mode).toBe("syntax_only");
+    // Critical: no auto_discovered field — the store was loaded but we explicitly bypassed it.
+    expect(result.auto_discovered).toBeUndefined();
+  });
+
+  it("validation_mode='syntax_only' ignores a schema passed inline (parser-only on demand)", async () => {
+    const result = await handleValidate({
+      policies: `permit (principal, action, resource);`,
+      schema: SCHEMA_STR,
+      validation_mode: "syntax_only",
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.validation_mode).toBe("syntax_only");
+    expect(result.auto_discovered).toBeUndefined();
+  });
+
+  it("validation_mode='syntax_and_schema' with an inline schema runs full type-check", async () => {
+    const result = await handleValidate({
+      policies: POLICIES,
+      schema: SCHEMA_STR,
+      validation_mode: "syntax_and_schema",
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.validation_mode).toBe("syntax_and_schema");
+  });
+
+  it("validation_mode='syntax_and_schema' resolves from the workspace when no inline schema was provided", async () => {
+    const storePath = makeAutoDiscoveryStore("workspace-explicit");
+    tempDirs.push(storePath);
+    storeManager.loadFromRoots([{ uri: `file://${storePath}`, name: "workspace-explicit" }]);
+
+    const result = await handleValidate({
+      policies: POLICIES,
+      validation_mode: "syntax_and_schema",
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.validation_mode).toBe("syntax_and_schema");
+    expect(result.auto_discovered).toEqual({ schema_from: "workspace-explicit" });
+  });
+
+  it("validation_mode='syntax_and_schema' with no schema available returns a clear error (not a silent fall-through to syntax_only)", async () => {
+    const result = await handleValidate({
+      policies: `permit (principal, action, resource);`,
+      validation_mode: "syntax_and_schema",
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]!.message).toMatch(/syntax_and_schema/);
+    expect(result.errors[0]!.message).toMatch(/schema/);
+    // The response's validation_mode reflects what the caller asked for, not what got run.
+    expect(result.validation_mode).toBe("syntax_and_schema");
+  });
+});
