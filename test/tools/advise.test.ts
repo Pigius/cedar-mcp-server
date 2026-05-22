@@ -252,4 +252,62 @@ describe("cedar_advise — context preparator (v2, no sampling)", () => {
     expect(result.bundle_version).toBe("v2");
     expect(result.intent).toBe("Add a deletion permission");
   });
+
+  // ─── 11b: store auto-resolve + discoverability ─────────────────────────────
+
+  it("B21 — no store_ref + zero stores loaded: store_status='not_provided', no available_stores", () => {
+    const result = handleAdvise({ intent: "anything" }, manager);
+    expect(result.store_status).toBe("not_provided");
+    expect(result.store_name).toBeUndefined();
+    expect(result.available_stores).toBeUndefined();
+    expect(result.auto_discovered).toBeUndefined();
+  });
+
+  it("B22 — no store_ref + exactly one store loaded: auto-resolves to that store, store_status='loaded', auto_discovered.store_from='single_loaded_store'", () => {
+    const storePath = makeStore(tmpDir, "onlystore", { admin: ADMIN_POLICY });
+    manager.loadFromRoots([{ uri: `file://${storePath}`, name: "onlystore" }]);
+
+    const result = handleAdvise({ intent: "Plan a change" }, manager);
+
+    expect(result.store_status).toBe("loaded");
+    expect(result.store_name).toBe("onlystore");
+    expect(result.auto_discovered).toEqual({ store_from: "single_loaded_store" });
+    expect(result.schema_summary?.valid).toBe(true);
+    expect(result.policy_inventory).toHaveLength(1);
+    // available_stores is irrelevant on a clean resolution; should be omitted to keep the payload small
+    expect(result.available_stores).toBeUndefined();
+  });
+
+  it("B23 — no store_ref + multiple stores loaded: store_status='ambiguous', available_stores lists candidates, no schema_summary", () => {
+    const blue = makeStore(tmpDir, "blue", { admin: ADMIN_POLICY });
+    const green = makeStore(tmpDir, "green", { admin: ADMIN_POLICY });
+    manager.loadFromRoots([
+      { uri: `file://${blue}`, name: "blue" },
+      { uri: `file://${green}`, name: "green" },
+    ]);
+
+    const result = handleAdvise({ intent: "Plan a change" }, manager);
+
+    expect(result.store_status).toBe("ambiguous");
+    expect(result.store_name).toBeUndefined();
+    expect(result.available_stores).toEqual(expect.arrayContaining(["blue", "green"]));
+    expect(result.available_stores).toHaveLength(2);
+    expect(result.schema_summary).toBeUndefined();
+    expect(result.policy_inventory).toEqual([]);
+    expect(result.auto_discovered).toBeUndefined();
+  });
+
+  it("B24 — store_ref provided but not found + other stores loaded: store_status='not_found', available_stores hints recovery", () => {
+    const storePath = makeStore(tmpDir, "production", { admin: ADMIN_POLICY });
+    manager.loadFromRoots([{ uri: `file://${storePath}`, name: "production" }]);
+
+    const result = handleAdvise({ intent: "anything", store_ref: "stagign" }, manager);
+
+    expect(result.store_status).toBe("not_found");
+    expect(result.store_name).toBe("stagign");
+    expect(result.available_stores).toEqual(["production"]);
+    expect(result.schema_summary).toBeUndefined();
+    expect(result.policy_inventory).toEqual([]);
+    expect(result.auto_discovered).toBeUndefined();
+  });
 });

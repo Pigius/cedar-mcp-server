@@ -665,7 +665,7 @@ This pivot replaced the original sampling-based `cedar_advise` after dogfooding 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | `intent` | yes | Natural-language description of the desired authorization behavior, kept verbatim from the user |
-| `store_ref` | no | Store name or `cedar://` URI (e.g. `cedar://policies/production` or `production`); when supplied, the bundle includes `schema_summary`, `policy_inventory` with full policy text, and `patterns_detected_in_store` counts grounded in the actual store |
+| `store_ref` | no | Store name or `cedar://` URI (e.g. `cedar://policies/production` or `production`); when supplied, the bundle includes `schema_summary`, `policy_inventory` with full policy text, and `patterns_detected_in_store` counts grounded in the actual store. Omit when exactly one store is loaded and the bundle will auto-resolve to it (the response's `auto_discovered.store_from` field reports `"single_loaded_store"`). With multiple stores loaded and no `store_ref`, the response sets `store_status: "ambiguous"` and lists the candidate names under `available_stores`. |
 
 **Output shape (abridged):**
 
@@ -727,7 +727,7 @@ This pivot replaced the original sampling-based `cedar_advise` after dogfooding 
 
 **When to use:** at the start of any policy-change conversation, before recommending any Cedar snippet. Call this once per intent; iterate the plan in conversation rather than re-calling for small refinements (the bundle is the same for a given intent + store).
 
-**Tip: mention your store name in the prompt.** For best results, name your policy store when you ask cedar_advise to plan a change (for example, "plan this change against my cedar-sandbox store" or "modify policies in production"). With a store name, the bundle grounds in your actual schema, full policy inventory, and detected patterns. Without one, `store_status` is `"not_provided"` and the bundle returns the generic Cedar / AVP context only, which forces the assistant to either guess or fall back to reading the files itself.
+**Tip: mention your store name in the prompt when you have more than one loaded.** For best results, name your policy store when you ask cedar_advise to plan a change (for example, "plan this change against my cedar-sandbox store" or "modify policies in production"). With a store name, the bundle grounds in your actual schema, full policy inventory, and detected patterns. If exactly one store is loaded the bundle auto-resolves to it (you'll see `auto_discovered.store_from: "single_loaded_store"`). If multiple stores are loaded and you don't pass `store_ref`, `store_status` is `"ambiguous"` and `available_stores` lists the candidates so you can retry. If no stores are loaded at all, `store_status` is `"not_provided"` and the bundle returns the generic Cedar / AVP context only.
 
 ---
 
