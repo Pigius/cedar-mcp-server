@@ -393,6 +393,63 @@ describe("integration smoke", () => {
     }
   }, 30_000);
 
+  it("S6c — stdio: cwd-fallback is loaded synchronously so the VERY FIRST resources/list after initialize is already populated (Round 5 Scenario E fix)", async () => {
+    // Round 5 (2026-05-22) ran with kickoff-11 11a's notification path and
+    // STILL FAILED Scenario E: Claude Code's `listMcpResources` did not
+    // invalidate its cache on `notifications/resources/list_changed`. The
+    // spec-correct fix wasn't user-correct. kickoff-12 12a's fix is structural:
+    // populate StoreManager synchronously in runStdio BEFORE
+    // `await server.connect(transport)`, so by the time the client can send
+    // ANY request, the store already exists. This test exercises the new
+    // contract directly: NO polling, NO waiting on notifications, the very
+    // first listResources after initialize must return the populated store.
+
+    const sandbox = mkdtempSync(join(tmpdir(), "cedar-stdio-sync-"));
+    mkdirSync(join(sandbox, "policies"));
+    mkdirSync(join(sandbox, "entities"));
+    writeFileSync(join(sandbox, "schema.cedarschema"),
+      `namespace DocMgmt {\n  entity Role;\n  entity User in [Role];\n  entity Document;\n  action "read" appliesTo { principal: User, resource: Document };\n}\n`);
+    writeFileSync(join(sandbox, "policies", "admin.cedar"),
+      `permit (principal in DocMgmt::Role::"admin", action, resource);\n`);
+    writeFileSync(join(sandbox, "entities", "sample.json"), "[]");
+
+    const repoRoot = join(import.meta.dirname, "../..");
+    const transport = new StdioClientTransport({
+      command: "npx",
+      args: ["tsx", join(repoRoot, "src/index.ts")],
+      cwd: sandbox,
+      stderr: "pipe",
+    });
+    // No roots capability declared. Mirrors Claude Code stdio.
+    const noRootsClient = new Client(
+      { name: "smoke-test-sync-client", version: "1.0.0" },
+      { capabilities: {} }
+    );
+    client = noRootsClient;
+
+    try {
+      await noRootsClient.connect(transport);
+
+      // First request after connect. No polling. No notification wait. If
+      // the store is empty here, the sync cwd-fallback did not fire before
+      // the transport accepted this request — that is the Round 5 bug.
+      const { resources } = await noRootsClient.listResources();
+      const uris = resources.map((r) => r.uri);
+      const storeName = basename(sandbox);
+
+      expect(uris).toContain(`cedar://policies/${storeName}/admin`);
+      expect(uris).toContain(`cedar://schema/${storeName}`);
+      expect(uris).toContain(`cedar://entities/${storeName}/sample`);
+      expect(uris).toContain(`cedar://policies/${storeName}`);
+      expect(uris).toContain(`cedar://entities/${storeName}`);
+      expect(uris.length).toBeGreaterThanOrEqual(5);
+    } finally {
+      try { await noRootsClient.close(); } catch { /* ignore */ }
+      try { await transport.close(); } catch { /* ignore */ }
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("S5 — server returns instructions on initialize: routing table + anti-bypass directive, under 2KB", async () => {
     const conn = makeClient();
     client = conn.client;

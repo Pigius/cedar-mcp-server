@@ -22,6 +22,30 @@ function looksLikeCedarWorkspace(path: string): boolean {
   );
 }
 
+/**
+ * Synchronously populate StoreManager with the cwd-fallback store, if the
+ * cwd looks like a Cedar workspace. Returns true when a store was loaded.
+ *
+ * Round 5 dogfood (Scenario E) found that emitting `notifications/resources/list_changed`
+ * AFTER an async cwd-fallback (kickoff-11 11a) was insufficient: Claude Code's
+ * `listMcpResources` does not honor `list_changed` for cache invalidation, so a
+ * client that snapshots `resources/list` once on the initialize response stays
+ * stuck on the empty pre-fallback snapshot regardless of any later notification.
+ *
+ * The fix is structural: populate StoreManager BEFORE the transport accepts
+ * any client requests. `process.cwd()` is available at startup; there is no
+ * need to wait for the transport. By the time the client can send any
+ * request, the store already exists.
+ *
+ * Exported so unit tests can exercise it without spawning a stdio process.
+ */
+export function populateCwdFallback(cwd: string): boolean {
+  if (!looksLikeCedarWorkspace(cwd)) return false;
+  const cwdRoot = { uri: `file://${cwd}`, name: basename(cwd) || "workspace" };
+  storeManager.loadFromRoots([cwdRoot]);
+  return true;
+}
+
 interface ParsedArgs {
   mode: "stdio" | "http" | "help";
   port?: number;
@@ -113,6 +137,24 @@ Examples:
   );
 }
 
+/**
+ * Reconcile StoreManager state with whatever the MCP client advertises via
+ * `listRoots()`. Called from `oninitialized` AND on every
+ * `notifications/roots/list_changed` from the client.
+ *
+ * Precedence rules:
+ *  - Client-advertised roots REPLACE any sync-loaded cwd-fallback. A client
+ *    that explicitly advertises roots is stating authoritative intent; the
+ *    cwd-fallback was an "if you didn't tell me anything" default.
+ *  - Client returns ZERO roots (or doesn't support listRoots): preserve the
+ *    sync-loaded cwd-fallback. We do NOT call `loadFromRoots([])` here
+ *    because StoreManager.loadFromRoots clears the store as its first step,
+ *    which would wipe the cwd-fallback populated synchronously at startup.
+ *
+ * `sendResourceListChanged` always fires at the end: cache-aware clients use
+ * it to refetch when the store membership changes. Idempotent if nothing
+ * actually changed.
+ */
 async function loadRootsStdio(server: Awaited<ReturnType<typeof createServer>>) {
   let clientRoots: Array<{ uri: string; name?: string }> = [];
   let clientSupportsRoots = true;
@@ -123,46 +165,59 @@ async function loadRootsStdio(server: Awaited<ReturnType<typeof createServer>>) 
     clientSupportsRoots = false;
   }
 
-  // Round 3 dogfood (2026-05-22) found that Claude Code stdio does not
-  // advertise the workspace as a root, so this branch is the load-bearing
-  // path for the common "user runs claude in their Cedar repo" case:
-  // if the client gave us nothing AND the cwd has a Cedar layout, load
-  // cwd as a "workspace" store. This is the cwd fallback that makes
-  // workspace auto-discovery (10d) actually do anything in stdio.
-  if (clientRoots.length === 0 && looksLikeCedarWorkspace(process.cwd())) {
-    const cwdRoot = { uri: `file://${process.cwd()}`, name: basename(process.cwd()) || "workspace" };
-    storeManager.loadFromRoots([cwdRoot]);
-    console.error(`[cedar-mcp-server] No roots from MCP client; auto-loaded cwd as workspace store: "${cwdRoot.name}" (${cwdRoot.uri}). Cedar tools will auto-discover schema/policies/entities from here.`);
-  } else {
+  // Reconcile StoreManager state from the current (clientRoots, cwd) tuple.
+  // Stateless re-derivation: each call to loadRootsStdio computes the right
+  // state from scratch rather than mutating the previous state. This matters
+  // when a client advertised roots earlier and then retracts them via
+  // `roots/list_changed`; without re-derivation the stale advertised roots
+  // would leak forward instead of falling back to cwd.
+  if (clientRoots.length > 0) {
     storeManager.loadFromRoots(clientRoots);
-    if (clientRoots.length === 0) {
-      if (clientSupportsRoots) {
-        console.error("[cedar-mcp-server] MCP client returned 0 roots and cwd does not look like a Cedar workspace (no schema.cedarschema, schema.json, or policies/ dir). Cedar tools will require inline inputs.");
-      } else {
-        console.error("[cedar-mcp-server] MCP client does not support roots/list and cwd does not look like a Cedar workspace. Cedar tools will require inline inputs.");
-      }
+    console.error(`[cedar-mcp-server] Loaded ${clientRoots.length} root(s) from MCP client: ${clientRoots.map((r) => r.uri).join(", ")} (replaces any sync-loaded cwd-fallback).`);
+  } else if (populateCwdFallback(process.cwd())) {
+    const name = basename(process.cwd()) || "workspace";
+    console.error(`[cedar-mcp-server] MCP client advertised 0 roots; using cwd-fallback store "${name}" (re-derived).`);
+  } else {
+    storeManager.loadFromRoots([]);
+    if (clientSupportsRoots) {
+      console.error("[cedar-mcp-server] MCP client returned 0 roots and cwd does not look like a Cedar workspace (no schema.cedarschema, schema.json, or policies/ dir). Cedar tools will require inline inputs.");
     } else {
-      console.error(`[cedar-mcp-server] Loaded ${clientRoots.length} root(s) from MCP client: ${clientRoots.map((r) => r.uri).join(", ")}`);
+      console.error("[cedar-mcp-server] MCP client does not support roots/list and cwd does not look like a Cedar workspace. Cedar tools will require inline inputs.");
     }
   }
 
-  // Round 4 dogfood (2026-05-22) found that the cwd-fallback ran async inside
-  // `oninitialized` AFTER the initialize handshake had returned. Cache-aware
-  // MCP clients (Claude Code is one) snapshot resources/list on connect and
-  // never refetch until told to; they saw the empty pre-fallback snapshot and
-  // never the populated post-fallback one. Emitting list_changed here is the
-  // standard MCP cache-invalidation contract for `resources` capability with
-  // `listChanged: true` (the McpServer registers that capability automatically
-  // when at least one resource is declared). McpServer.sendResourceListChanged
-  // is a no-op when the transport is not connected, so this is safe to call
-  // from every path including the initial roots load.
+  // kickoff-11 11a notification: cache-aware clients refetch on this. The
+  // synchronous cwd-fallback from runStdio means the FIRST resources/list
+  // already sees the populated store (this is the Round 5 fix), so this
+  // notification is most useful for the late-arriving-roots case (client
+  // sends roots/list_changed mid-session, swapping the store set). McpServer
+  // makes it a no-op when not connected, so it's safe to call from any path.
   server.sendResourceListChanged();
 }
 
 async function runStdio(): Promise<void> {
   const server = createServer();
-  const transport = new StdioServerTransport();
 
+  // Round 5 fix: populate StoreManager BEFORE the transport accepts any
+  // client requests. The previous shape (cwd-fallback inside `oninitialized`
+  // → kickoff-11 sendResourceListChanged) was contract-correct against the
+  // MCP spec but did not hold against Claude Code, which snapshots
+  // resources/list once on the initialize response and does not honor
+  // list_changed for the `listMcpResources` cache. Synchronous population
+  // before connect closes the window entirely.
+  //
+  // Edge case (kickoff-10 audit Probe C): if process.cwd() is the
+  // cedar-mcp-server repo itself, it currently has none of schema.cedarschema,
+  // schema.json, or policies/ — looksLikeCedarWorkspace returns false. If a
+  // future commit adds a top-level policies/ directory (for examples or
+  // similar) the fallback would self-load. Flag in CHANGELOG if that
+  // ever happens.
+  if (populateCwdFallback(process.cwd())) {
+    const name = basename(process.cwd()) || "workspace";
+    console.error(`[cedar-mcp-server] Synchronously auto-loaded cwd as workspace store: "${name}" (file://${process.cwd()}). StoreManager populated before transport accepts requests.`);
+  }
+
+  const transport = new StdioServerTransport();
   await server.connect(transport);
 
   server.server.oninitialized = async () => {
