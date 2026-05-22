@@ -10,8 +10,11 @@
  */
 import { describe, it, expect, afterEach } from "vitest";
 import { join } from "node:path";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { ListRootsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 // ─── Dataset 1 fixtures ────────────────────────────────────────────────────────
 
@@ -227,6 +230,78 @@ describe("integration smoke", () => {
     }
     expect(failures, failures.join("\n")).toEqual([]);
   }, 15_000);
+
+  it("S6 — stdio: client advertising roots populates resources/list with cedar:// URIs (H2 end-to-end)", async () => {
+    // Round 3 (2026-05-22) observed `listMcpResources(server: "cedar")` returning empty
+    // when Claude Code was used via stdio with no `--root` flag. This test isolates the
+    // server-side path: a client that DOES advertise roots via the MCP `roots/list`
+    // handler should see the cedar:// resource scheme populated. If this passes, the
+    // round-3 empty result is on the client (Claude Code stdio not advertising the
+    // workspace as a root), not the server.
+
+    const sandbox = mkdtempSync(join(tmpdir(), "cedar-stdio-roots-"));
+    mkdirSync(join(sandbox, "policies"));
+    mkdirSync(join(sandbox, "entities"));
+    writeFileSync(join(sandbox, "schema.cedarschema"),
+      `namespace DocMgmt {\n  entity Role;\n  entity User in [Role];\n  entity Document;\n  action "read" appliesTo { principal: User, resource: Document };\n}\n`);
+    writeFileSync(join(sandbox, "policies", "admin.cedar"),
+      `permit (principal in DocMgmt::Role::"admin", action, resource);\n`);
+    writeFileSync(join(sandbox, "entities", "sample.json"), "[]");
+
+    const repoRoot = join(import.meta.dirname, "../..");
+    const transport = new StdioClientTransport({
+      command: "npx",
+      args: ["tsx", "src/index.ts"],
+      cwd: repoRoot,
+      stderr: "pipe",
+    });
+    // Critical: declare roots capability so the server's `listRoots()` is allowed.
+    const rootsClient = new Client(
+      { name: "smoke-test-roots-client", version: "1.0.0" },
+      { capabilities: { roots: { listChanged: true } } }
+    );
+    rootsClient.setRequestHandler(ListRootsRequestSchema, async () => ({
+      roots: [{ uri: `file://${sandbox}`, name: "stdio-test-store" }],
+    }));
+    client = rootsClient;
+
+    try {
+      await rootsClient.connect(transport);
+
+      // The server's `oninitialized` callback fires async after the initialize
+      // handshake returns. Trigger it deterministically by sending a
+      // notifications/roots/list_changed: index.ts listens for this and
+      // re-runs loadRootsStdio, which we can await client-side via the
+      // round-trip (the SDK serializes notifications behind subsequent requests).
+      await rootsClient.sendRootsListChanged();
+
+      // Now poll resources/list briefly; the loadRootsStdio handler runs async on
+      // the server side after the notification, so allow a short retry window.
+      let resources: Array<{ uri: string; name?: string }> = [];
+      for (let attempt = 0; attempt < 20; attempt++) {
+        const r = await rootsClient.listResources();
+        resources = r.resources;
+        if (resources.length > 0) break;
+        await new Promise((res) => setTimeout(res, 100));
+      }
+      const uris = resources.map((r) => r.uri);
+
+      // Per-item resources for our temp store
+      expect(uris).toContain("cedar://policies/stdio-test-store/admin");
+      expect(uris).toContain("cedar://schema/stdio-test-store");
+      expect(uris).toContain("cedar://entities/stdio-test-store/sample");
+
+      // Index resources
+      expect(uris).toContain("cedar://policies/stdio-test-store");
+      expect(uris).toContain("cedar://entities/stdio-test-store");
+
+      expect(uris.length).toBeGreaterThanOrEqual(5);
+    } finally {
+      try { await rootsClient.close(); } catch { /* ignore */ }
+      try { await transport.close(); } catch { /* ignore */ }
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it("S5 — server returns instructions on initialize: routing table + anti-bypass directive, under 2KB", async () => {
     const conn = makeClient();

@@ -99,8 +99,17 @@ async function loadRootsStdio(server: Awaited<ReturnType<typeof createServer>>) 
   try {
     const result = await server.server.listRoots();
     storeManager.loadFromRoots(result.roots);
+    if (result.roots.length === 0) {
+      // Observability: future dogfood rounds need to see whether the client
+      // returned empty (Claude Code stdio currently does this) vs. threw
+      // (older clients with no roots capability). Different cause, different fix.
+      console.error("[cedar-mcp-server] MCP client returned 0 roots; cedar:// resources will be empty until the client advertises a workspace root. See README 'Roots in stdio vs HTTP'.");
+    } else {
+      console.error(`[cedar-mcp-server] Loaded ${result.roots.length} root(s) from MCP client: ${result.roots.map((r) => r.uri).join(", ")}`);
+    }
   } catch {
     // Client may not support roots — proceed with empty store list
+    console.error("[cedar-mcp-server] MCP client does not support roots/list; cedar:// resources will be empty. Use --http with --root flags for a deployer-configured store.");
   }
 }
 
