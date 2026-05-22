@@ -101,8 +101,6 @@ Rule of thumb for assistants: if a question is "what does this policy look like?
 
 ## Quick start
 
-> **Pre-release status:** this package is not yet published to npm. The `npx cedar-mcp-server` snippets below are the post-publish configuration; for now, install from source (see [Running from source](#running-from-source) below) and point your MCP client at the resulting local script instead of `npx`.
-
 ### How MCP stdio servers work
 
 Your MCP client (Claude Code, Claude Desktop, Cursor) spawns `cedar-mcp-server` as a child process when it needs Cedar tooling. You do not run the server directly. You configure your client to point at it once, and the client manages the process lifecycle over stdio for each session. If you try `node dist/index.js` in a terminal it will appear to hang; that is the server waiting for JSON-RPC messages on stdin. Stop it with `Ctrl+C`.
