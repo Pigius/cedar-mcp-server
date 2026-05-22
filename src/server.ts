@@ -187,7 +187,49 @@ export function createServer(): McpServer {
         if ("error" in resolved) return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }] };
         entities = resolved.content;
       }
-      const result = await handleAuthorizeBatch({ ...input, entities });
+
+      // kickoff-14 14a: resolve cedar://policies/{store} into a basename-keyed
+      // map so determining_policies returns "admin" / "editor" rather than
+      // "policy0" / "policy1". Mirrors the cedar_authorize wrapper pattern in
+      // handleAuthorizeMcp. Other ref shapes (single policy, non-store URIs)
+      // still fall through to handleAuthorizeBatch's resolveRef call.
+      let policiesMap: Record<string, string> | undefined;
+      let policies = input.policies;
+      let policyRefForward: string | undefined = input.policy_ref;
+      if (!policies && input.policy_ref) {
+        const storeMatch = input.policy_ref.match(/^cedar:\/\/policies\/([^/]+)$/);
+        const singleMatch = input.policy_ref.match(/^cedar:\/\/policies\/([^/]+)\/([^/]+)$/);
+        if (storeMatch) {
+          const storeName = storeMatch[1]!;
+          try {
+            const ids = storeManager.listPolicies(storeName);
+            policiesMap = {};
+            for (const id of ids) policiesMap[id] = storeManager.readPolicy(storeName, id);
+            policyRefForward = undefined;
+          } catch (e) {
+            return { content: [{ type: "text", text: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }) }] };
+          }
+        } else if (singleMatch) {
+          const storeName = singleMatch[1]!;
+          const policyId = singleMatch[2]!;
+          try {
+            policiesMap = { [policyId]: storeManager.readPolicy(storeName, policyId) };
+            policyRefForward = undefined;
+          } catch (e) {
+            return { content: [{ type: "text", text: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }) }] };
+          }
+        }
+      }
+
+      const result = await handleAuthorizeBatch({
+        policies,
+        policy_ref: policyRefForward,
+        policiesMap,
+        schema: input.schema,
+        schema_ref: input.schema_ref,
+        requests: input.requests,
+        entities,
+      });
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
   );

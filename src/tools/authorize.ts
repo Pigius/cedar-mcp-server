@@ -94,9 +94,12 @@ function readIdAnnotation(policyText: string): string | undefined {
  *
  * For a flat policies string, we split it via policySetTextToParts so each
  * policy gets its own id rather than collapsing into a single anonymous blob.
+ *
+ * Exported so cedar_authorize_batch can apply the same H1 resolution and
+ * surface the same stable IDs as the single-request handler (kickoff-14 14a).
  */
-function buildStaticPolicies(
-  input: AuthorizeInput
+export function buildStaticPolicies(
+  input: Pick<AuthorizeInput, "policies" | "policiesMap">
 ): { record: Record<PolicyId, Policy> } | { error: string } {
   const record: Record<PolicyId, Policy> = {};
   const usedIds = new Set<string>();

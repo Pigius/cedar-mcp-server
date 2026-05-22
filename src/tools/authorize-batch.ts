@@ -1,15 +1,24 @@
 import { isAuthorized } from "@cedar-policy/cedar-wasm/nodejs";
-import type { AuthorizationCall, CedarValueJson, Entities, Schema } from "@cedar-policy/cedar-wasm/nodejs";
+import type { AuthorizationCall, CedarValueJson, Entities, Policy, PolicyId, Schema } from "@cedar-policy/cedar-wasm/nodejs";
 import {
   detectFormat,
   normalizeEntities,
   normalizePrincipalRef,
 } from "../utils/format-detector.js";
 import { resolveRef } from "../resources/ref-resolver.js";
+import { buildStaticPolicies } from "./authorize.js";
 
 export interface AuthorizeBatchInput {
   policies?: string;       // inline Cedar policies
   policy_ref?: string;     // cedar:// URI resolving to policies
+  /**
+   * Map of policy id -> policy text. Each key becomes the WASM policy_id and
+   * surfaces in `determining_policies` (overridden by an `@id` annotation when
+   * present). The MCP wrapper populates this from `cedar://policies/{store}`
+   * refs so determining_policies reports file basenames (`admin`, `editor`)
+   * instead of positional placeholders (kickoff-14 14a).
+   */
+  policiesMap?: Record<string, string>;
   schema?: string;         // inline JSON schema
   schema_ref?: string;     // cedar:// URI resolving to schema
   requests: string;        // JSON array of authorization request objects
@@ -51,19 +60,31 @@ interface RawRequest {
 export async function handleAuthorizeBatch(
   input: AuthorizeBatchInput
 ): Promise<AuthorizeBatchResult> {
-  // 1. Resolve policies
-  let policiesText: string;
-  if (input.policies) {
-    policiesText = input.policies;
-  } else if (input.policy_ref) {
-    const resolved = resolveRef(input.policy_ref);
-    if ("error" in resolved) {
-      return zeroResult(`Failed to resolve policy_ref: ${resolved.error}`);
+  // 1. Resolve policies into a Record<PolicyId, Policy> map so determining_policies
+  // returns stable IDs (file basename, @id annotation, or `policy<idx>` fallback)
+  // the same way cedar_authorize already does. policiesMap (populated by the MCP
+  // wrapper from cedar://policies/{store} refs) wins; inline policies text falls
+  // back through buildStaticPolicies' string-split path.
+  let policiesText: string | undefined;
+  let policiesMap: Record<string, string> | undefined = input.policiesMap;
+  if (policiesMap === undefined) {
+    if (input.policies) {
+      policiesText = input.policies;
+    } else if (input.policy_ref) {
+      const resolved = resolveRef(input.policy_ref);
+      if ("error" in resolved) {
+        return zeroResult(`Failed to resolve policy_ref: ${resolved.error}`);
+      }
+      policiesText = resolved.content;
+    } else {
+      return zeroResult("Either policies, policy_ref, or policiesMap is required.");
     }
-    policiesText = resolved.content;
-  } else {
-    return zeroResult("Either policies or policy_ref is required.");
   }
+  const built = buildStaticPolicies({ policies: policiesText, policiesMap });
+  if ("error" in built) {
+    return zeroResult(built.error);
+  }
+  const staticPolicies: Record<PolicyId, Policy> = built.record;
 
   // 2. Resolve schema (optional)
   let schema: Schema | undefined;
@@ -209,7 +230,7 @@ export async function handleAuthorizeBatch(
       action: actionRef,
       resource: resourceRef,
       context,
-      policies: { staticPolicies: policiesText },
+      policies: { staticPolicies },
       entities: entitiesForCall,
       ...(callSchema ? { schema: callSchema, validateRequest: true } : {}),
     };

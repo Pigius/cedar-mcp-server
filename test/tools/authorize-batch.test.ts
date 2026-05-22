@@ -390,3 +390,70 @@ describe("cedar_authorize_batch — input validation", () => {
     expect(result.summary).toMatch(/^1 request:/);
   });
 });
+
+// ─── kickoff-14 14a: H1 stable-ID resolution parity with cedar_authorize ──────
+
+const ADMIN_POLICY_TEXT = `permit (principal in DocMgmt::Role::"admin", action, resource);`;
+const EDITOR_POLICY_TEXT = `permit (principal in DocMgmt::Role::"editor", action in [DocMgmt::Action::"READ", DocMgmt::Action::"WRITE"], resource);`;
+
+describe("cedar_authorize_batch — kickoff-14 14a stable-ID resolution", () => {
+  it("policiesMap input → determining_policies returns basenames, not positional", async () => {
+    const requests = JSON.stringify([
+      req('DocMgmt::User::"alice"', 'DocMgmt::Action::"READ"', 'DocMgmt::Document::"doc-public"'),
+    ]);
+
+    const result = await handleAuthorizeBatch({
+      policiesMap: { admin: ADMIN_POLICY_TEXT, editor: EDITOR_POLICY_TEXT },
+      entities: SHARED_ENTITIES,
+      requests,
+    });
+
+    expect(result.decisions[0]!.decision).toBe("Allow");
+    expect(result.decisions[0]!.determining_policies).toEqual(["admin"]);
+    expect(result.decisions[0]!.determining_policies).not.toContain("policy0");
+  });
+
+  it("policiesMap with @id annotation → @id wins over basename", async () => {
+    const annotated = `@id("admin-policy-v2")\n${ADMIN_POLICY_TEXT}`;
+    const requests = JSON.stringify([
+      req('DocMgmt::User::"alice"', 'DocMgmt::Action::"READ"', 'DocMgmt::Document::"doc-public"'),
+    ]);
+
+    const result = await handleAuthorizeBatch({
+      policiesMap: { admin: annotated, editor: EDITOR_POLICY_TEXT },
+      entities: SHARED_ENTITIES,
+      requests,
+    });
+
+    expect(result.decisions[0]!.decision).toBe("Allow");
+    expect(result.decisions[0]!.determining_policies).toEqual(["admin-policy-v2"]);
+  });
+
+  it("inline policies string falls back to positional IDs the same way buildStaticPolicies does (regression)", async () => {
+    // The flat-string path retains positional fallback because the caller did
+    // not supply file basenames. Verifies the existing inline path is unaffected.
+    const requests = JSON.stringify([
+      req('DocMgmt::User::"alice"', 'DocMgmt::Action::"READ"', 'DocMgmt::Document::"doc-public"'),
+    ]);
+
+    const result = await handleAuthorizeBatch({
+      policies: POLICIES,
+      entities: SHARED_ENTITIES,
+      requests,
+    });
+
+    expect(result.decisions[0]!.decision).toBe("Allow");
+    const determining = result.decisions[0]!.determining_policies ?? [];
+    expect(determining).toHaveLength(1);
+    expect(determining[0]).toMatch(/^policy\d+$/);
+  });
+
+  it("error message names policiesMap as a valid input alternative", async () => {
+    const result = await handleAuthorizeBatch({
+      requests: JSON.stringify([
+        req('DocMgmt::User::"alice"', 'DocMgmt::Action::"READ"', 'DocMgmt::Document::"doc-public"'),
+      ]),
+    });
+    expect(result.summary).toContain("policiesMap");
+  });
+});
