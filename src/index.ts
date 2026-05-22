@@ -133,19 +133,30 @@ async function loadRootsStdio(server: Awaited<ReturnType<typeof createServer>>) 
     const cwdRoot = { uri: `file://${process.cwd()}`, name: basename(process.cwd()) || "workspace" };
     storeManager.loadFromRoots([cwdRoot]);
     console.error(`[cedar-mcp-server] No roots from MCP client; auto-loaded cwd as workspace store: "${cwdRoot.name}" (${cwdRoot.uri}). Cedar tools will auto-discover schema/policies/entities from here.`);
-    return;
+  } else {
+    storeManager.loadFromRoots(clientRoots);
+    if (clientRoots.length === 0) {
+      if (clientSupportsRoots) {
+        console.error("[cedar-mcp-server] MCP client returned 0 roots and cwd does not look like a Cedar workspace (no schema.cedarschema, schema.json, or policies/ dir). Cedar tools will require inline inputs.");
+      } else {
+        console.error("[cedar-mcp-server] MCP client does not support roots/list and cwd does not look like a Cedar workspace. Cedar tools will require inline inputs.");
+      }
+    } else {
+      console.error(`[cedar-mcp-server] Loaded ${clientRoots.length} root(s) from MCP client: ${clientRoots.map((r) => r.uri).join(", ")}`);
+    }
   }
 
-  storeManager.loadFromRoots(clientRoots);
-  if (clientRoots.length === 0) {
-    if (clientSupportsRoots) {
-      console.error("[cedar-mcp-server] MCP client returned 0 roots and cwd does not look like a Cedar workspace (no schema.cedarschema, schema.json, or policies/ dir). Cedar tools will require inline inputs.");
-    } else {
-      console.error("[cedar-mcp-server] MCP client does not support roots/list and cwd does not look like a Cedar workspace. Cedar tools will require inline inputs.");
-    }
-  } else {
-    console.error(`[cedar-mcp-server] Loaded ${clientRoots.length} root(s) from MCP client: ${clientRoots.map((r) => r.uri).join(", ")}`);
-  }
+  // Round 4 dogfood (2026-05-22) found that the cwd-fallback ran async inside
+  // `oninitialized` AFTER the initialize handshake had returned. Cache-aware
+  // MCP clients (Claude Code is one) snapshot resources/list on connect and
+  // never refetch until told to; they saw the empty pre-fallback snapshot and
+  // never the populated post-fallback one. Emitting list_changed here is the
+  // standard MCP cache-invalidation contract for `resources` capability with
+  // `listChanged: true` (the McpServer registers that capability automatically
+  // when at least one resource is declared). McpServer.sendResourceListChanged
+  // is a no-op when the transport is not connected, so this is safe to call
+  // from every path including the initial roots load.
+  server.sendResourceListChanged();
 }
 
 async function runStdio(): Promise<void> {

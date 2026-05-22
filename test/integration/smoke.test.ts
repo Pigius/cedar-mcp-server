@@ -9,12 +9,12 @@
  * below). Currently uses real stdio spawn via tsx.
  */
 import { describe, it, expect, afterEach } from "vitest";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { ListRootsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { ListRootsRequestSchema, ResourceListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 
 // ─── Dataset 1 fixtures ────────────────────────────────────────────────────────
 
@@ -298,6 +298,96 @@ describe("integration smoke", () => {
       expect(uris.length).toBeGreaterThanOrEqual(5);
     } finally {
       try { await rootsClient.close(); } catch { /* ignore */ }
+      try { await transport.close(); } catch { /* ignore */ }
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("S6b — stdio: cwd-fallback notifies resources/list_changed so cache-based clients see the store (Round 4 Scenario E)", async () => {
+    // Round 4 (2026-05-22) observed `listMcpResources(server: "cedar")` returning empty
+    // when Claude Code stdio launched the server in a Cedar workspace cwd without
+    // advertising roots. Root cause is timing: the cwd-fallback path in loadRootsStdio
+    // populates StoreManager asynchronously inside `oninitialized`, which runs AFTER
+    // the initialize handshake. A client that snapshots `resources/list` once on
+    // connect (the standard MCP cache pattern, what Claude Code does) reads it
+    // before the store exists, gets empty, and never refetches.
+    //
+    // The fix: after loadRootsStdio populates StoreManager, the server must emit
+    // `notifications/resources/list_changed` so cache-aware clients invalidate and
+    // refetch. This test fails until that notification is wired.
+
+    const sandbox = mkdtempSync(join(tmpdir(), "cedar-stdio-cwd-"));
+    mkdirSync(join(sandbox, "policies"));
+    mkdirSync(join(sandbox, "entities"));
+    writeFileSync(join(sandbox, "schema.cedarschema"),
+      `namespace DocMgmt {\n  entity Role;\n  entity User in [Role];\n  entity Document;\n  action "read" appliesTo { principal: User, resource: Document };\n}\n`);
+    writeFileSync(join(sandbox, "policies", "admin.cedar"),
+      `permit (principal in DocMgmt::Role::"admin", action, resource);\n`);
+    writeFileSync(join(sandbox, "entities", "sample.json"), "[]");
+
+    const repoRoot = join(import.meta.dirname, "../..");
+    const transport = new StdioClientTransport({
+      command: "npx",
+      args: ["tsx", join(repoRoot, "src/index.ts")],
+      cwd: sandbox, // server's cwd is the workspace, so 10d cwd fallback fires
+      stderr: "pipe",
+    });
+    // Critical: NO roots capability declared. This mirrors a real Claude Code
+    // stdio client that does not advertise the workspace as a root. The server
+    // must take the cwd-fallback path AND notify list_changed afterwards.
+    const noRootsClient = new Client(
+      { name: "smoke-test-cwd-client", version: "1.0.0" },
+      { capabilities: {} }
+    );
+    client = noRootsClient;
+
+    // Track resources/list_changed notifications. Server should emit at least one
+    // after the cwd-fallback populates StoreManager.
+    let listChangedCount = 0;
+    let listChangedReceived: () => void = () => {};
+    const listChangedPromise = new Promise<void>((resolve) => { listChangedReceived = resolve; });
+    noRootsClient.setNotificationHandler(ResourceListChangedNotificationSchema, async () => {
+      listChangedCount += 1;
+      listChangedReceived();
+    });
+
+    try {
+      await noRootsClient.connect(transport);
+
+      // Snapshot resources immediately. The cwd-fallback runs async in
+      // `oninitialized`; this call MAY race ahead of it and return empty.
+      // That race is exactly the user-facing bug — empty here is fine as long
+      // as the server notifies list_changed and a subsequent fetch returns the
+      // populated list.
+      await noRootsClient.listResources();
+
+      // Wait for at least one resources/list_changed notification with a generous
+      // timeout. Without the fix this never fires.
+      const timeoutMs = 5000;
+      await Promise.race([
+        listChangedPromise,
+        new Promise<void>((_, reject) => setTimeout(() => reject(new Error(
+          `Timed out after ${timeoutMs}ms waiting for notifications/resources/list_changed. ` +
+          `Server populated StoreManager via cwd-fallback but never told the client to refetch — ` +
+          `cache-based clients (e.g. Claude Code) stay stuck on the empty initial snapshot.`,
+        )), timeoutMs)),
+      ]);
+
+      expect(listChangedCount).toBeGreaterThanOrEqual(1);
+
+      // After the notification, a fresh listResources MUST return the populated set.
+      const { resources } = await noRootsClient.listResources();
+      const uris = resources.map((r) => r.uri);
+      const storeName = basename(sandbox);
+
+      expect(uris).toContain(`cedar://policies/${storeName}/admin`);
+      expect(uris).toContain(`cedar://schema/${storeName}`);
+      expect(uris).toContain(`cedar://entities/${storeName}/sample`);
+      expect(uris).toContain(`cedar://policies/${storeName}`);
+      expect(uris).toContain(`cedar://entities/${storeName}`);
+      expect(uris.length).toBeGreaterThanOrEqual(5);
+    } finally {
+      try { await noRootsClient.close(); } catch { /* ignore */ }
       try { await transport.close(); } catch { /* ignore */ }
       rmSync(sandbox, { recursive: true, force: true });
     }
