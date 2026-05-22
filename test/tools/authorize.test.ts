@@ -431,3 +431,81 @@ describe("cedar_authorize — M3 decision_reason field", () => {
     expect(result.decision_reason).toBe("evaluation_error");
   });
 });
+
+describe("cedar_authorize — 10c empirical response shape snapshots (H1 + M3 contract)", () => {
+  // Round 3 (2026-05-22) doubted whether determining_policies returned stable
+  // basenames (H1) and whether decision_reason was actually populated (M3).
+  // These snapshot tests lock in the literal response shape for the canonical
+  // cases so a future dogfood reviewer can read the test and see the contract,
+  // rather than reasoning about it from the Cedar SDK alone.
+
+  const ADMIN_POLICY = `permit (principal in DocMgmt::Role::"admin", action, resource);`;
+  const FORBID_TOPSECRET = `forbid (principal, action, resource) when { resource.classification == "top_secret" } unless { principal in DocMgmt::Role::"admin" };`;
+
+  it("Allow via admin role: determining_policies uses the policiesMap basename, decision_reason = permit_policy_fired", async () => {
+    const result = await handleAuthorize({
+      policiesMap: { admin: ADMIN_POLICY },
+      principal: 'DocMgmt::User::"alice"',
+      action: 'DocMgmt::Action::"READ"',
+      resource: 'DocMgmt::Document::"doc-public"',
+      entities: JSON.stringify(ENTITIES),
+    });
+    expect(result).toMatchInlineSnapshot(`
+      {
+        "decision": "Allow",
+        "decision_reason": "permit_policy_fired",
+        "determining_policies": [
+          "admin",
+        ],
+        "errors": [],
+        "format_detected": "cedar",
+        "format_note": "Input is in Cedar/WASM format.",
+      }
+    `);
+  });
+
+  it("Default deny (no policy fires): determining_policies is empty, decision_reason = default_deny_no_permit_matched", async () => {
+    const result = await handleAuthorize({
+      policiesMap: { admin: ADMIN_POLICY },
+      principal: 'DocMgmt::User::"dave"',
+      action: 'DocMgmt::Action::"READ"',
+      resource: 'DocMgmt::Document::"doc-public"',
+      entities: JSON.stringify(ENTITIES),
+    });
+    expect(result).toMatchInlineSnapshot(`
+      {
+        "decision": "Deny",
+        "decision_reason": "default_deny_no_permit_matched",
+        "determining_policies": [],
+        "errors": [],
+        "format_detected": "cedar",
+        "format_note": "Input is in Cedar/WASM format.",
+      }
+    `);
+  });
+
+  it("Forbid fires for non-admin on top_secret: determining_policies surfaces forbid id, decision_reason = forbid_policy_fired", async () => {
+    const result = await handleAuthorize({
+      policiesMap: {
+        admin: ADMIN_POLICY,
+        "forbid-topsecret": FORBID_TOPSECRET,
+      },
+      principal: 'DocMgmt::User::"bob"',
+      action: 'DocMgmt::Action::"READ"',
+      resource: 'DocMgmt::Document::"doc-secret"',
+      entities: JSON.stringify(ENTITIES),
+    });
+    expect(result).toMatchInlineSnapshot(`
+      {
+        "decision": "Deny",
+        "decision_reason": "forbid_policy_fired",
+        "determining_policies": [
+          "forbid-topsecret",
+        ],
+        "errors": [],
+        "format_detected": "cedar",
+        "format_note": "Input is in Cedar/WASM format.",
+      }
+    `);
+  });
+});
