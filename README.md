@@ -71,17 +71,29 @@ A fair question, especially in an MCP client (Claude Code, Cursor) where the ass
 
 Because the tools encode things that do not live in the files.
 
-**Validation.** `cedar_validate` and `cedar_validate_schema` run the official Cedar 4.11.0 parser. Reading a policy tells you what the author wrote, not whether the parser accepts it. Syntax errors, schema-type mismatches, missing-attribute references, optional-attribute access without a guard, and `appliesTo` violations all surface from the parser, not from text inspection. The parser is the only authority on validity.
+#### Validation
 
-**Evaluation.** `cedar_authorize` and `cedar_authorize_batch` run the Cedar engine. Reading a policy set tells you the rules; running them tells you the decisions. The default-deny behavior, forbid-overrides-permit precedence, optional-attribute silent-skip, action-group membership resolution, schema-validated entity typing, and condition short-circuiting are engine semantics. You cannot simulate the engine accurately by mental execution over the policy text, especially when the entity graph has parents or shared attributes.
+`cedar_validate` and `cedar_validate_schema` run the official Cedar 4.11.0 parser. Reading a policy tells you what the author wrote, not whether the parser accepts it. Syntax errors, schema-type mismatches, missing-attribute references, optional-attribute access without a guard, and `appliesTo` violations all surface from the parser, not from text inspection. The parser is the only authority on validity.
 
-**Planning.** `cedar_advise` returns a structured context bundle for any "I want to change my policies to do X" intent: schema summary, policy inventory with AST-classified Cedar pattern per file (Membership / Relationship / Discretionary / hybrid), intent-selected gotcha catalog (10 entries drawn from Cedar/AVP failure modes), AVP `UpdatePolicy` mutability rules, Cedar patterns reference, sequencing guidance, and explicit follow-up instructions. None of this lives in the policy files. AST-based pattern classification requires parsing each policy and walking the JSON; the AVP API contract requires knowing the `UpdatePolicy` spec; the gotcha catalog requires Cedar/AVP experience. The bundle is deterministic (no LLM round-trip on the server side); the calling assistant produces the actual plan from it and then verifies snippets via `cedar_validate` and `cedar_check_policy_change`.
+#### Evaluation
 
-**Change safety.** `cedar_check_policy_change`, `cedar_diff_schema`, and `cedar_diff_policy_stores` encode the AVP `UpdatePolicy` contract and the rules of which schema changes break which policies. Visually diffing two policies in a code review tells you what text changed; only these tools tell you whether AVP will accept the update in place, whether the change will silently drop existing policy matches, or whether decisions will flip for canonical requests. A text diff over schemas does not tell you which attribute removals break which policy reads.
+`cedar_authorize` and `cedar_authorize_batch` run the Cedar engine. Reading a policy set tells you the rules; running them tells you the decisions. The default-deny behavior, forbid-overrides-permit precedence, optional-attribute silent-skip, action-group membership resolution, schema-validated entity typing, and condition short-circuiting are engine semantics. You cannot simulate the engine accurately by mental execution over the policy text, especially when the entity graph has parents or shared attributes.
 
-**Analysis.** `cedar_explain` returns structure derived from the parsed AST: effect, scope breakdown, conditions, and detected patterns. Reading the policy gives the assistant a paraphrase; the AST gives ground truth (correct slot detection in templates, optional-attribute guard recognition, path-matching pattern detection, name-based identity recognition). For inherited policies that mix RBAC scope with ABAC conditions, the AST-derived breakdown is materially more reliable than text inspection.
+#### Planning
 
-**Discoverability and sequencing.** `cedar_list_templates`, `cedar_list_template_links`, the `cedar://policies/{store}` and `cedar://entities/{store}` resource URIs, and the StoreManager-backed `policy_ref` / `schema_ref` / `entities_ref` parameters give the assistant a stable, schema-aware view of the project. Doing this through `ls` and `cat` works for one-off inspection, but the tools encode the store layout convention (`policies/`, `entities/`, `templates/`, `template-links/`, `schema.cedarschema` or `schema.json`) and surface only what the other tools will actually resolve.
+`cedar_advise` returns a structured context bundle for any "I want to change my policies to do X" intent: schema summary, policy inventory with AST-classified Cedar pattern per file (Membership / Relationship / Discretionary / hybrid), intent-selected gotcha catalog (10 entries drawn from Cedar/AVP failure modes), AVP `UpdatePolicy` mutability rules, Cedar patterns reference, sequencing guidance, and explicit follow-up instructions. None of this lives in the policy files. AST-based pattern classification requires parsing each policy and walking the JSON; the AVP API contract requires knowing the `UpdatePolicy` spec; the gotcha catalog requires Cedar/AVP experience. The bundle is deterministic (no LLM round-trip on the server side); the calling assistant produces the actual plan from it and then verifies snippets via `cedar_validate` and `cedar_check_policy_change`.
+
+#### Change safety
+
+`cedar_check_policy_change`, `cedar_diff_schema`, and `cedar_diff_policy_stores` encode the AVP `UpdatePolicy` contract and the rules of which schema changes break which policies. Visually diffing two policies in a code review tells you what text changed; only these tools tell you whether AVP will accept the update in place, whether the change will silently drop existing policy matches, or whether decisions will flip for canonical requests. A text diff over schemas does not tell you which attribute removals break which policy reads.
+
+#### Analysis
+
+`cedar_explain` returns structure derived from the parsed AST: effect, scope breakdown, conditions, and detected patterns. Reading the policy gives the assistant a paraphrase; the AST gives ground truth (correct slot detection in templates, optional-attribute guard recognition, path-matching pattern detection, name-based identity recognition). For inherited policies that mix RBAC scope with ABAC conditions, the AST-derived breakdown is materially more reliable than text inspection.
+
+#### Discoverability and sequencing
+
+`cedar_list_templates`, `cedar_list_template_links`, the `cedar://policies/{store}` and `cedar://entities/{store}` resource URIs, and the StoreManager-backed `policy_ref` / `schema_ref` / `entities_ref` parameters give the assistant a stable, schema-aware view of the project. Doing this through `ls` and `cat` works for one-off inspection, but the tools encode the store layout convention (`policies/`, `entities/`, `templates/`, `template-links/`, `schema.cedarschema` or `schema.json`) and surface only what the other tools will actually resolve.
 
 Rule of thumb for assistants: if a question is "what does this policy look like?", Read is fine. If it is "is this valid?", "would it allow X?", "can I update it in place?", "what changes if I deploy this?", "what's the safest way to add Y?", or "what patterns does this store use?", the right answer is a tool call. The tools are load-bearing for correctness, not a convenience layer.
 
@@ -463,7 +475,7 @@ The assistant translates this to a cedar_authorize_batch call referencing `cedar
       "action": "MyApp::Action::\"read\"",
       "resource": "MyApp::Document::\"doc-public\"",
       "decision": "Allow",
-      "determining_policies": ["policy0"]
+      "determining_policies": ["admin"]
     },
     {
       "index": 1,
@@ -471,7 +483,7 @@ The assistant translates this to a cedar_authorize_batch call referencing `cedar
       "action": "MyApp::Action::\"write\"",
       "resource": "MyApp::Document::\"doc-public\"",
       "decision": "Allow",
-      "determining_policies": ["policy1"]
+      "determining_policies": ["editor"]
     },
     {
       "index": 2,
@@ -488,7 +500,7 @@ The assistant translates this to a cedar_authorize_batch call referencing `cedar
 
 Per-request errors carry an `error` field describing what went wrong (malformed entities, schema violation, etc.) without aborting the rest of the batch.
 
-Note: `cedar_authorize_batch` currently emits positional `policy0` / `policy1` IDs in `determining_policies` rather than the file basenames (`admin` / `editor`) that single-request `cedar_authorize` returns. The H1 stable-ID resolution from kickoff-09 9d was applied to `cedar_authorize` but not its batch sibling. Tracked for v1.1.
+`determining_policies` returns file basenames (`admin`, `editor`) when policies are loaded from a `cedar://policies/{store}` ref, matching the H1 stable-ID resolution that single-request `cedar_authorize` uses. Inline policies passed as a flat string still surface as `policy0` / `policy1` (positional fallback) because the caller did not supply basenames.
 
 **When to use:** regression testing a canonical request suite after any policy edit. Pair with `cedar_diff_policy_stores`'s `behavioral_test_requests` when you also want a side-by-side comparison against the previous policy set.
 
@@ -709,17 +721,17 @@ The assistant translates this to a cedar_generate_sample_request call with the p
 
 ```json
 {
-  "principal": "MyApp::MyApp::User::\"sample-principal\"",
+  "principal": "MyApp::User::\"sample-principal\"",
   "action": "MyApp::Action::\"delete\"",
-  "resource": "MyApp::MyApp::Document::\"sample-resource\"",
+  "resource": "MyApp::Document::\"sample-resource\"",
   "entities": [
     {
-      "uid": { "type": "MyApp::MyApp::User", "id": "sample-principal" },
+      "uid": { "type": "MyApp::User", "id": "sample-principal" },
       "attrs": {},
       "parents": [{ "type": "MyApp::Role", "id": "admin" }]
     },
     {
-      "uid": { "type": "MyApp::MyApp::Document", "id": "sample-resource" },
+      "uid": { "type": "MyApp::Document", "id": "sample-resource" },
       "attrs": {},
       "parents": []
     },
@@ -735,7 +747,7 @@ The assistant translates this to a cedar_generate_sample_request call with the p
 }
 ```
 
-Note the `MyApp::MyApp::User` double-namespace in the generated principal and resource. That's a known artifact of how the tool constructs entity references when the schema is supplied in `.cedarschema` form, and the response is faithful to what currently ships. Tracked for v1.1 cleanup. The Cedar engine still accepts the payload (`ready_to_test: true` is verified by running the request through `cedar_authorize` internally), so the sample is functional even with the awkward double prefix.
+The generator verifies the payload internally before returning: `ready_to_test: true` means a follow-up `cedar_authorize` call with these exact inputs will reproduce the documented `decision`.
 
 **When to use:** generating test payloads without hand-crafting entities, or verifying that a policy produces the decisions you expect before deploying it. Pass the output directly to `cedar_authorize` to verify.
 
@@ -843,7 +855,7 @@ The calling LLM should ask the user which store and re-invoke with an explicit `
 
 **When to use:** at the start of any policy-change conversation, before recommending any Cedar snippet. Call this once per intent; iterate the plan in conversation rather than re-calling for small refinements (the bundle is the same for a given intent + store).
 
-**Tip: mention your store name in the prompt when you have more than one loaded.** For best results, name your policy store when you ask cedar_advise to plan a change (for example, "plan this change against my cedar-sandbox store" or "modify policies in production"). With a store name, the bundle grounds in your actual schema, full policy inventory, and detected patterns. If exactly one store is loaded the bundle auto-resolves to it (you'll see `auto_discovered.store_from: "single_loaded_store"`). If multiple stores are loaded and you don't pass `store_ref`, `store_status` is `"ambiguous"` and `available_stores` lists the candidates so you can retry. If no stores are loaded at all, `store_status` is `"not_provided"` and the bundle returns the generic Cedar / AVP context only.
+When you have more than one store loaded, name your policy store in the prompt (for example, "plan this change against my cedar-sandbox store" or "modify policies in production"). With a store name, the bundle grounds in your actual schema, full policy inventory, and detected patterns. If exactly one store is loaded the bundle auto-resolves to it (you'll see `auto_discovered.store_from: "single_loaded_store"`). If multiple stores are loaded and you don't pass `store_ref`, `store_status` is `"ambiguous"` and `available_stores` lists the candidates so you can retry. If no stores are loaded at all, `store_status` is `"not_provided"` and the bundle returns the generic Cedar / AVP context only.
 
 ---
 
@@ -1499,11 +1511,11 @@ A practical pattern: use `avp-cli` to pull policy stores from AVP to disk, then 
 
 Cedar is a policy language built around three entities: a **principal** (who's asking), an **action** (what they want to do), and a **resource** (what they want to do it to). Authorization is the question: does a `permit` policy match this triple, without any `forbid` policy blocking it?
 
-A few things that shape how you write policies:
+A few things that shape how you write policies.
 
-**Default deny.** Cedar denies every request unless a `permit` policy explicitly matches. There is no "allow by default" option.
+Cedar uses **default deny**: every request is denied unless a `permit` policy explicitly matches. There is no "allow by default" option.
 
-**`forbid` overrides `permit`.** A single matching `forbid` blocks the request regardless of how many `permit` policies also match. If you need an exception to a `forbid`, use `unless`:
+A matching **`forbid`** policy overrides every `permit`. A single matching `forbid` blocks the request regardless of how many `permit` policies also match. If you need an exception to a `forbid`, use `unless`:
 
 ```cedar
 forbid (principal, action, resource)
@@ -1511,9 +1523,9 @@ when { resource.classification == "top_secret" }
 unless { principal in MyApp::Role::"admin" };
 ```
 
-**Namespaces are part of entity type names.** `MyApp::User::"alice"` is the canonical form. The double colon separates namespace from type, and the quoted string is the entity ID.
+Namespaces are part of entity type names. `MyApp::User::"alice"` is the canonical form: the double colon separates namespace from type, and the quoted string is the entity ID.
 
-**Start with `cedar_advise`.** Describe what you want in plain language and let the server produce a starting policy. Then validate it with `cedar_validate` and verify the decision with `cedar_authorize`.
+Start with `cedar_advise`. Describe what you want in plain language and let the server produce a starting policy. Then validate it with `cedar_validate` and verify the decision with `cedar_authorize`.
 
 The upstream [Cedar documentation](https://docs.cedarpolicy.com) and [Cedar policy patterns](https://docs.cedarpolicy.com/overview/patterns.html) are the authoritative reference.
 
