@@ -732,6 +732,39 @@ This pivot replaced the original sampling-based `cedar_advise` after dogfooding 
 }
 ```
 
+**Auto-resolve response shape (single store loaded, no `store_ref` passed):**
+
+```json
+{
+  "tool": "cedar_advise",
+  "bundle_version": "v2",
+  "intent": "Make editors read-only, admins exempt",
+  "store_name": "cedar-sandbox",
+  "store_status": "loaded",
+  "auto_discovered": { "store_from": "single_loaded_store" },
+  "schema_summary": { "valid": true, "format": "cedarschema", "namespaces": ["DocMgmt"], "...": "..." },
+  "policy_inventory": [ { "policy_id": "admin", "pattern": "membership", "...": "..." } ],
+  "...": "rest of the bundle"
+}
+```
+
+**Ambiguous response shape (multiple stores loaded, no `store_ref` passed):**
+
+```json
+{
+  "tool": "cedar_advise",
+  "bundle_version": "v2",
+  "intent": "Make editors read-only, admins exempt",
+  "store_status": "ambiguous",
+  "available_stores": ["blue", "green"],
+  "policy_inventory": [],
+  "patterns_detected_in_store": [],
+  "...": "universal Cedar / AVP context still present"
+}
+```
+
+The calling LLM should ask the user which store and re-invoke with an explicit `store_ref`. The `next_steps_for_llm` field in the response includes this guidance.
+
 **When to use:** at the start of any policy-change conversation, before recommending any Cedar snippet. Call this once per intent; iterate the plan in conversation rather than re-calling for small refinements (the bundle is the same for a given intent + store).
 
 **Tip: mention your store name in the prompt when you have more than one loaded.** For best results, name your policy store when you ask cedar_advise to plan a change (for example, "plan this change against my cedar-sandbox store" or "modify policies in production"). With a store name, the bundle grounds in your actual schema, full policy inventory, and detected patterns. If exactly one store is loaded the bundle auto-resolves to it (you'll see `auto_discovered.store_from: "single_loaded_store"`). If multiple stores are loaded and you don't pass `store_ref`, `store_status` is `"ambiguous"` and `available_stores` lists the candidates so you can retry. If no stores are loaded at all, `store_status` is `"not_provided"` and the bundle returns the generic Cedar / AVP context only.

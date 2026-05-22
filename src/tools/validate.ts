@@ -172,6 +172,58 @@ function locationFor(err: DetailedError, source: string): { line: number; column
   return offsetToLineCol(source, loc.start);
 }
 
+/**
+ * Result of trying to resolve a schema from inline input or the workspace.
+ * Discriminated so callers can wrap the failure cases in whatever result
+ * shape they need (ValidateResult vs `{ error }` envelope).
+ */
+type SchemaResolution =
+  | { kind: "resolved"; schema: string; from?: string }
+  | { kind: "none" }
+  | { kind: "error"; error: string };
+
+/**
+ * Resolve a Cedar schema for cedar_validate from, in order:
+ *   1. an inline `schema` string (highest priority; `from` is left undefined),
+ *   2. an explicit `store` name (read `schema.cedarschema` / `schema.json` from that loaded store; errors if read fails),
+ *   3. the workspace default when exactly one store is loaded (10d auto-discovery; falls to `none` if the store has no schema file),
+ *   4. `none` when no store is loaded at all,
+ *   5. `error` when multiple stores are loaded and no `store` was passed to disambiguate.
+ *
+ * Single source of truth for the resolution rules; called from both
+ * handleValidate (direct callers, including tests) and handleValidateMcp
+ * (after `schema_ref` resolution). Replaces two near-duplicate inline
+ * blocks from kickoff-10 (10d) that the kickoff-10 audit flagged for
+ * v1.1 cleanup.
+ */
+function resolveWorkspaceSchema(
+  inputSchema: string | undefined,
+  storeParam: string | undefined,
+): SchemaResolution {
+  if (inputSchema !== undefined) return { kind: "resolved", schema: inputSchema };
+  if (storeParam) {
+    try {
+      return { kind: "resolved", schema: storeManager.readSchema(storeParam), from: storeParam };
+    } catch (e) {
+      return { kind: "error", error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+  const def = storeManager.getDefaultStore();
+  if (def.kind === "single") {
+    try {
+      return { kind: "resolved", schema: storeManager.readSchema(def.store.name), from: def.store.name };
+    } catch {
+      // Store exists but has no schema file; caller falls through to syntax_only
+      // (or errors out in syntax_and_schema mode at the next gate).
+      return { kind: "none" };
+    }
+  }
+  if (def.kind === "ambiguous") {
+    return { kind: "error", error: `Multiple stores are loaded (${def.names.join(", ")}). Pass store: "<name>" to choose.` };
+  }
+  return { kind: "none" };
+}
+
 /** Parser-only validation. Used by mode="syntax_only" and by mode="auto" when no schema is resolvable. */
 function parseOnlyResult(policies: string): ValidateResult {
   const parseAnswer = checkParsePolicySet({ staticPolicies: policies });
@@ -217,56 +269,23 @@ export async function handleValidate(input: ValidateInput): Promise<ValidateResu
     return parseOnlyResult(input.policies);
   }
 
-  // 10d workspace auto-discovery. When the caller supplies no schema, consult
-  // the StoreManager. Single-store deployments pull the schema implicitly so
-  // the validate flow upgrades from syntax-only to syntax_and_schema without
-  // forcing the user to paste schema text. Multi-store deployments require
-  // an explicit `store` to disambiguate; surface an actionable error rather
-  // than guessing which store is intended.
-  let schemaText = input.schema;
-  let schemaFrom: string | undefined;
-  if (schemaText === undefined) {
-    if (input.store) {
-      try {
-        schemaText = storeManager.readSchema(input.store);
-        schemaFrom = input.store;
-      } catch (e) {
-        return {
-          valid: false,
-          errors: [{
-            policy_id: "",
-            message: e instanceof Error ? e.message : String(e),
-            hint: null,
-          }],
-          warnings: [],
-          policy_count: countPolicies(input.policies),
-          validation_mode: mode === "syntax_and_schema" ? "syntax_and_schema" : "syntax_only",
-        };
-      }
-    } else {
-      const def = storeManager.getDefaultStore();
-      if (def.kind === "single") {
-        try {
-          schemaText = storeManager.readSchema(def.store.name);
-          schemaFrom = def.store.name;
-        } catch {
-          // Store exists but no schema file; fall through to syntax-only mode.
-        }
-      } else if (def.kind === "ambiguous") {
-        return {
-          valid: false,
-          errors: [{
-            policy_id: "",
-            message: `Multiple stores are loaded (${def.names.join(", ")}). Pass store: "<name>" to choose.`,
-            hint: null,
-          }],
-          warnings: [],
-          policy_count: countPolicies(input.policies),
-          validation_mode: mode === "syntax_and_schema" ? "syntax_and_schema" : "syntax_only",
-        };
-      }
-    }
+  // 10d workspace auto-discovery, single-sourced through resolveWorkspaceSchema.
+  // Returns inline schema verbatim, reads from `store` if named, or auto-discovers
+  // from the default workspace store. Errors out on read failure or multi-store
+  // ambiguity. mode="syntax_and_schema" turns "no schema available" into a hard
+  // error in the next gate.
+  const resolution = resolveWorkspaceSchema(input.schema, input.store);
+  if (resolution.kind === "error") {
+    return {
+      valid: false,
+      errors: [{ policy_id: "", message: resolution.error, hint: null }],
+      warnings: [],
+      policy_count: countPolicies(input.policies),
+      validation_mode: mode === "syntax_and_schema" ? "syntax_and_schema" : "syntax_only",
+    };
   }
+  const schemaText: string | undefined = resolution.kind === "resolved" ? resolution.schema : undefined;
+  const schemaFrom: string | undefined = resolution.kind === "resolved" ? resolution.from : undefined;
 
   // 11c: explicit syntax_and_schema requires a schema. After both inline and
   // auto-discovery paths, if there is still no schema, the caller asked for a
@@ -421,29 +440,15 @@ export async function handleValidateMcp(
     schema = resolved.content;
   }
 
+  // 10d workspace auto-discovery, single-sourced through resolveWorkspaceSchema.
+  // schema_ref was resolved above; if a caller used schema_ref the helper short-
+  // circuits on the inline-schema check and never touches StoreManager.
+  const resolution = resolveWorkspaceSchema(schema, input.store);
+  if (resolution.kind === "error") return { error: resolution.error };
   let autoSchemaFrom: string | undefined;
-  if (!schema && !input.schema_ref) {
-    if (input.store) {
-      try {
-        schema = storeManager.readSchema(input.store);
-        autoSchemaFrom = input.store;
-      } catch (e) {
-        return { error: e instanceof Error ? e.message : String(e) };
-      }
-    } else {
-      const def = storeManager.getDefaultStore();
-      if (def.kind === "single") {
-        try {
-          schema = storeManager.readSchema(def.store.name);
-          autoSchemaFrom = def.store.name;
-        } catch {
-          // Store has no schema file; validate stays in syntax-only mode (auto)
-          // or errors out below in syntax_and_schema mode.
-        }
-      } else if (def.kind === "ambiguous") {
-        return { error: `Multiple stores are loaded (${def.names.join(", ")}). Pass store: "<name>" to choose.` };
-      }
-    }
+  if (resolution.kind === "resolved") {
+    schema = resolution.schema;
+    autoSchemaFrom = resolution.from;
   }
 
   const result = await handleValidate({ policies, schema, validation_mode: mode });
