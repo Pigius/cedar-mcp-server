@@ -1,10 +1,19 @@
 import { validate, checkParsePolicySet, policySetTextToParts } from "@cedar-policy/cedar-wasm/nodejs";
 import type { Schema, DetailedError } from "@cedar-policy/cedar-wasm/nodejs";
+import { storeManager } from "../resources/store-manager.js";
 
 export interface ValidateInput {
   policies: string;
   /** Optional. When omitted, validate runs in syntax-only mode (parse-only, no schema typing). */
   schema?: string;
+  /**
+   * Optional store name to disambiguate workspace auto-discovery (10d) when
+   * multiple stores are loaded. The server.ts handler resolves this against
+   * the StoreManager and supplies `schema` before calling handleValidate; the
+   * field is carried through so handleValidate can surface ambiguity errors
+   * when callers invoke it directly without going through the MCP layer.
+   */
+  store?: string;
 }
 
 export interface ValidateError {
@@ -30,6 +39,14 @@ export interface ValidateResult {
    * "syntax_and_schema": full parse + type-check against a Cedar schema.
    */
   validation_mode: "syntax_only" | "syntax_and_schema";
+  /**
+   * 10d workspace auto-discovery: populated when an input was sourced from a
+   * loaded MCP root rather than supplied inline. Surfaces to the caller which
+   * store ended up satisfying the missing field so the action is traceable.
+   */
+  auto_discovered?: {
+    schema_from?: string;
+  };
 }
 
 /**
@@ -141,11 +158,62 @@ function locationFor(err: DetailedError, source: string): { line: number; column
 }
 
 export async function handleValidate(input: ValidateInput): Promise<ValidateResult> {
+  // 10d workspace auto-discovery. When the caller supplies no schema, consult
+  // the StoreManager. Single-store deployments pull the schema implicitly so
+  // the validate flow upgrades from syntax-only to syntax_and_schema without
+  // forcing the user to paste schema text. Multi-store deployments require
+  // an explicit `store` to disambiguate; surface an actionable error rather
+  // than guessing which store is intended.
+  let schemaText = input.schema;
+  let schemaFrom: string | undefined;
+  if (schemaText === undefined) {
+    if (input.store) {
+      try {
+        schemaText = storeManager.readSchema(input.store);
+        schemaFrom = input.store;
+      } catch (e) {
+        return {
+          valid: false,
+          errors: [{
+            policy_id: "",
+            message: e instanceof Error ? e.message : String(e),
+            hint: null,
+          }],
+          warnings: [],
+          policy_count: countPolicies(input.policies),
+          validation_mode: "syntax_only",
+        };
+      }
+    } else {
+      const def = storeManager.getDefaultStore();
+      if (def.kind === "single") {
+        try {
+          schemaText = storeManager.readSchema(def.store.name);
+          schemaFrom = def.store.name;
+        } catch {
+          // Store exists but no schema file; fall through to syntax-only mode.
+        }
+      } else if (def.kind === "ambiguous") {
+        return {
+          valid: false,
+          errors: [{
+            policy_id: "",
+            message: `Multiple stores are loaded (${def.names.join(", ")}). Pass store: "<name>" to choose.`,
+            hint: null,
+          }],
+          warnings: [],
+          policy_count: countPolicies(input.policies),
+          validation_mode: "syntax_only",
+        };
+      }
+    }
+  }
+
   // Syntax-only mode: no schema supplied. Run the parser alone so the caller
   // can sanity-check a snippet without having to construct a schema first.
   // Maps any parse failure to the same ValidateError shape the full-validate
   // path uses, so downstream consumers do not need a separate branch.
-  if (input.schema === undefined) {
+  if (schemaText === undefined) {
     const parseAnswer = checkParsePolicySet({ staticPolicies: input.policies });
     if (parseAnswer.type === "failure") {
       return {
@@ -178,7 +246,7 @@ export async function handleValidate(input: ValidateInput): Promise<ValidateResu
     };
   }
 
-  const schema = parseSchema(input.schema);
+  const schema = parseSchema(schemaText);
 
   // per spike-report-wasm-api.md §2: type field is WASM call health, not policy validity.
   // Check validationErrors.length for actual validity.
@@ -186,6 +254,8 @@ export async function handleValidate(input: ValidateInput): Promise<ValidateResu
     schema,
     policies: { staticPolicies: input.policies },
   });
+
+  const autoDiscovered = schemaFrom ? { schema_from: schemaFrom } : undefined;
 
   if (answer.type === "failure") {
     return {
@@ -207,6 +277,7 @@ export async function handleValidate(input: ValidateInput): Promise<ValidateResu
       warnings: [],
       policy_count: countPolicies(input.policies),
       validation_mode: "syntax_and_schema",
+      ...(autoDiscovered ? { auto_discovered: autoDiscovered } : {}),
     };
   }
 
@@ -244,5 +315,78 @@ export async function handleValidate(input: ValidateInput): Promise<ValidateResu
     warnings,
     policy_count: countPolicies(input.policies),
     validation_mode: "syntax_and_schema",
+    ...(autoDiscovered ? { auto_discovered: autoDiscovered } : {}),
   };
+}
+
+// ─── 10d workspace auto-discovery wrapper ────────────────────────────────────
+
+/**
+ * Inputs accepted by the MCP-level validate entry point. Wider than
+ * `ValidateInput` because it also accepts the `_ref` shapes the MCP layer
+ * resolves before reaching `handleValidate`.
+ */
+export interface ValidateMcpInput {
+  policies?: string;
+  policy_ref?: string;
+  schema?: string;
+  schema_ref?: string;
+  store?: string;
+}
+
+/**
+ * 10d workspace auto-discovery wrapper for `cedar_validate`. Resolves the
+ * schema from a loaded MCP root when neither `schema` nor `schema_ref` was
+ * supplied. Single-store deployments upgrade to syntax_and_schema mode;
+ * multi-store deployments require an explicit `store` parameter and return
+ * an ambiguity error otherwise.
+ */
+export async function handleValidateMcp(
+  input: ValidateMcpInput,
+  resolveRef: (uri: string) => { content: string } | { error: string },
+): Promise<{ result: ValidateResult } | { error: string }> {
+  let policies = input.policies;
+  if (!policies && input.policy_ref) {
+    const resolved = resolveRef(input.policy_ref);
+    if ("error" in resolved) return { error: resolved.error };
+    policies = resolved.content;
+  }
+  if (!policies) return { error: "Either policies or policy_ref is required" };
+
+  let schema = input.schema;
+  if (!schema && input.schema_ref) {
+    const resolved = resolveRef(input.schema_ref);
+    if ("error" in resolved) return { error: resolved.error };
+    schema = resolved.content;
+  }
+
+  let autoSchemaFrom: string | undefined;
+  if (!schema && !input.schema_ref) {
+    if (input.store) {
+      try {
+        schema = storeManager.readSchema(input.store);
+        autoSchemaFrom = input.store;
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : String(e) };
+      }
+    } else {
+      const def = storeManager.getDefaultStore();
+      if (def.kind === "single") {
+        try {
+          schema = storeManager.readSchema(def.store.name);
+          autoSchemaFrom = def.store.name;
+        } catch {
+          // Store has no schema file; validate stays in syntax-only mode.
+        }
+      } else if (def.kind === "ambiguous") {
+        return { error: `Multiple stores are loaded (${def.names.join(", ")}). Pass store: "<name>" to choose.` };
+      }
+    }
+  }
+
+  const result = await handleValidate({ policies, schema });
+  if (autoSchemaFrom) {
+    result.auto_discovered = { schema_from: autoSchemaFrom };
+  }
+  return { result };
 }

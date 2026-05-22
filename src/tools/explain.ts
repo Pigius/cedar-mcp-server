@@ -7,6 +7,7 @@ import {
   detectPatterns,
 } from "../parser/policy-ast.js";
 import type { PolicyJson } from "@cedar-policy/cedar-wasm/nodejs";
+import { storeManager } from "../resources/store-manager.js";
 
 export interface ExplainInput {
   policy: string;
@@ -32,6 +33,15 @@ export interface ExplainResult {
   summary: string;
   patterns_detected: string[];
   error?: string;
+  /**
+   * 10d workspace auto-discovery: populated by the server.ts MCP handler when
+   * the schema was resolved from a loaded MCP root rather than supplied inline.
+   * On ExplainManyResult the field appears on the top-level result so a single
+   * auto-discovery decision applies to the whole policy set.
+   */
+  auto_discovered?: {
+    schema_from?: string;
+  };
 }
 
 function parsePolicyJson(policyText: string): PolicyJson {
@@ -167,6 +177,14 @@ export async function handleExplain(input: ExplainInput): Promise<ExplainResult>
 export interface ExplainManyResult {
   policy_count: number;
   policies: Array<ExplainResult & { index: number }>;
+  /**
+   * 10d workspace auto-discovery: see ExplainResult.auto_discovered. On the
+   * many-result the field lives at the top level so the auto-discovered schema
+   * is reported once rather than duplicated on every policy entry.
+   */
+  auto_discovered?: {
+    schema_from?: string;
+  };
 }
 
 /**
@@ -194,4 +212,67 @@ export async function handleExplainMany(input: ExplainInput): Promise<ExplainMan
     policy_count: allPolicies.length,
     policies: results,
   };
+}
+
+// ─── 10d workspace auto-discovery wrapper ────────────────────────────────────
+
+/**
+ * Inputs accepted by the MCP-level explain entry point. Wider than
+ * `ExplainInput` because it also accepts the `_ref` shape the MCP layer
+ * resolves before reaching `handleExplainMany`.
+ */
+export interface ExplainMcpInput {
+  policy: string;
+  schema?: string;
+  schema_ref?: string;
+  store?: string;
+}
+
+/**
+ * 10d workspace auto-discovery wrapper for `cedar_explain`. Resolves the
+ * schema from a loaded MCP root when neither `schema` nor `schema_ref` was
+ * supplied. The schema is optional for explain, so single-store deployments
+ * with no schema file just delegate to the parser without one. Multi-store
+ * deployments with no explicit `store` parameter return an ambiguity error.
+ */
+export async function handleExplainMcp(
+  input: ExplainMcpInput,
+  resolveRef: (uri: string) => { content: string } | { error: string },
+): Promise<{ result: ExplainResult | ExplainManyResult } | { error: string }> {
+  let schema = input.schema;
+  if (!schema && input.schema_ref) {
+    const resolved = resolveRef(input.schema_ref);
+    if ("error" in resolved) return { error: resolved.error };
+    schema = resolved.content;
+  }
+
+  let autoSchemaFrom: string | undefined;
+  if (!schema && !input.schema_ref) {
+    if (input.store) {
+      try {
+        schema = storeManager.readSchema(input.store);
+        autoSchemaFrom = input.store;
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : String(e) };
+      }
+    } else {
+      const def = storeManager.getDefaultStore();
+      if (def.kind === "single") {
+        try {
+          schema = storeManager.readSchema(def.store.name);
+          autoSchemaFrom = def.store.name;
+        } catch {
+          // Store has no schema file; explain runs without a schema.
+        }
+      } else if (def.kind === "ambiguous") {
+        return { error: `Multiple stores are loaded (${def.names.join(", ")}). Pass store: "<name>" to choose.` };
+      }
+    }
+  }
+
+  const result = await handleExplainMany({ policy: input.policy, schema });
+  if (autoSchemaFrom) {
+    result.auto_discovered = { schema_from: autoSchemaFrom };
+  }
+  return { result };
 }

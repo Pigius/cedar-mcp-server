@@ -321,5 +321,8 @@ describe("integration smoke", () => {
     expect(text).toMatch(/cedar_advise FIRST/);
     // Anti-bypass directive present
     expect(text).toMatch(/Do NOT use Read or Bash to inspect Cedar policy semantics/);
+    // 10d: workspace auto-discovery directive present
+    expect(text).toMatch(/Workspace auto-discovery/);
+    expect(text).toMatch(/retry with the field omitted/);
   }, 15_000);
 });

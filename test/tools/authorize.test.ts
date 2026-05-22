@@ -1,6 +1,17 @@
-import { describe, it, expect } from "vitest";
-import { handleAuthorize } from "../../src/tools/authorize.js";
+import { describe, it, expect, afterEach } from "vitest";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { handleAuthorize, handleAuthorizeMcp } from "../../src/tools/authorize.js";
+import { storeManager } from "../../src/resources/store-manager.js";
 import { POLICIES, SCHEMA_JSON, ENTITIES } from "../fixtures/docmgmt.js";
+
+// resolveRef stub: the 10d auto-discovery tests never use `_ref` fields, so
+// any call into this stub indicates a test bug (the auto-discovery flow took
+// an unexpected branch). Surface that loudly rather than returning blank.
+const noResolve = (uri: string): { content: string } | { error: string } => ({
+  error: `unexpected resolveRef call in auto-discovery test: ${uri}`,
+});
 
 describe("cedar_authorize", () => {
   it("allows alice (admin) to read doc-public", async () => {
@@ -507,5 +518,126 @@ describe("cedar_authorize — 10c empirical response shape snapshots (H1 + M3 co
         "format_note": "Input is in Cedar/WASM format.",
       }
     `);
+  });
+});
+
+describe("cedar_authorize — 10d auto-discovery", () => {
+  const tempDirs: string[] = [];
+
+  // Minimal Cedar workspace fixture: schema + one permit-admin policy + entities
+  // covering alice (admin) and doc-public. Exercises all three auto-discovery
+  // axes (policies / schema / entities) so a successful Allow demonstrates the
+  // wrapper resolved every missing input from the workspace.
+  const SCHEMA_TEXT = `namespace DocMgmt {
+  entity User in [Role] = { name: String, email: String };
+  entity Role;
+  entity Document in [Folder] = { owner: String, classification: String };
+  entity Folder;
+  action READ appliesTo { principal: [User], resource: [Document], context: {} };
+  action WRITE appliesTo { principal: [User], resource: [Document], context: {} };
+  action DELETE appliesTo { principal: [User], resource: [Document], context: {} };
+}`;
+
+  function makeWorkspace(): string {
+    const dir = mkdtempSync(join(tmpdir(), "cedar-authorize-auto-"));
+    mkdirSync(join(dir, "policies"), { recursive: true });
+    mkdirSync(join(dir, "entities"), { recursive: true });
+    writeFileSync(
+      join(dir, "policies", "admin.cedar"),
+      `permit (principal in DocMgmt::Role::"admin", action, resource);`,
+    );
+    writeFileSync(join(dir, "schema.cedarschema"), SCHEMA_TEXT);
+    writeFileSync(join(dir, "entities", "world.json"), JSON.stringify(ENTITIES));
+    return dir;
+  }
+
+  afterEach(() => {
+    // Reset the singleton so per-test state never leaks into other suites.
+    storeManager.loadFromRoots([]);
+    while (tempDirs.length > 0) {
+      const dir = tempDirs.pop()!;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("single store loaded auto-pulls policies, schema, and entities (alice admin Allow)", async () => {
+    const ws = makeWorkspace();
+    tempDirs.push(ws);
+    storeManager.loadFromRoots([{ uri: `file://${ws}`, name: "workspace" }]);
+
+    const outcome = await handleAuthorizeMcp(
+      {
+        principal: 'DocMgmt::User::"alice"',
+        action: 'DocMgmt::Action::"READ"',
+        resource: 'DocMgmt::Document::"doc-public"',
+      },
+      noResolve,
+    );
+
+    expect("error" in outcome).toBe(false);
+    if ("error" in outcome) return;
+    expect(outcome.result.decision).toBe("Allow");
+    expect(outcome.result.errors).toEqual([]);
+    expect(outcome.result.determining_policies).toEqual(["admin"]);
+    expect(outcome.result.auto_discovered).toEqual({
+      policies_from: "workspace",
+      schema_from: "workspace",
+      entities_from: "workspace",
+    });
+  });
+
+  it("honors an explicit store parameter when multiple stores are loaded", async () => {
+    const blue = makeWorkspace();
+    const green = makeWorkspace();
+    tempDirs.push(blue, green);
+    storeManager.loadFromRoots([
+      { uri: `file://${blue}`, name: "blue" },
+      { uri: `file://${green}`, name: "green" },
+    ]);
+
+    const outcome = await handleAuthorizeMcp(
+      {
+        principal: 'DocMgmt::User::"alice"',
+        action: 'DocMgmt::Action::"READ"',
+        resource: 'DocMgmt::Document::"doc-public"',
+        store: "green",
+      },
+      noResolve,
+    );
+
+    expect("error" in outcome).toBe(false);
+    if ("error" in outcome) return;
+    expect(outcome.result.decision).toBe("Allow");
+    expect(outcome.result.auto_discovered).toEqual({
+      policies_from: "green",
+      schema_from: "green",
+      entities_from: "green",
+    });
+  });
+
+  it("returns an ambiguity error when multiple stores are loaded and no store is passed", async () => {
+    const blue = makeWorkspace();
+    const green = makeWorkspace();
+    tempDirs.push(blue, green);
+    storeManager.loadFromRoots([
+      { uri: `file://${blue}`, name: "blue" },
+      { uri: `file://${green}`, name: "green" },
+    ]);
+
+    const outcome = await handleAuthorizeMcp(
+      {
+        principal: 'DocMgmt::User::"alice"',
+        action: 'DocMgmt::Action::"READ"',
+        resource: 'DocMgmt::Document::"doc-public"',
+      },
+      noResolve,
+    );
+
+    expect("error" in outcome).toBe(true);
+    if (!("error" in outcome)) return;
+    expect(outcome.error).toMatch(/Multiple stores are loaded/);
+    expect(outcome.error).toContain("blue");
+    expect(outcome.error).toContain("green");
+    expect(outcome.error).toMatch(/Pass store/);
   });
 });

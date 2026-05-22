@@ -1,15 +1,15 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { handleAuthorize } from "./tools/authorize.js";
+import { handleAuthorizeMcp } from "./tools/authorize.js";
 import { handleAuthorizeBatch } from "./tools/authorize-batch.js";
-import { handleValidate } from "./tools/validate.js";
+import { handleValidateMcp } from "./tools/validate.js";
 import { handleValidateSchema } from "./tools/validate-schema.js";
 import { handleDiffSchema } from "./tools/diff-schema.js";
 import { handleValidateEntities } from "./tools/validate-entities.js";
 import { handleFormat } from "./tools/format.js";
 import { handleTranslate } from "./tools/translate.js";
-import { handleExplainMany } from "./tools/explain.js";
+import { handleExplainMcp } from "./tools/explain.js";
 import { handleCheckChange } from "./tools/check-change.js";
 import { handleGenerateSample } from "./tools/generate-sample.js";
 import { handleDiffStores } from "./tools/diff-stores.js";
@@ -127,6 +127,8 @@ Tool routing:
 - "Migrating from AVP" / "is my schema AVP-compatible" -> cedar_project_intelligence (when shipped) or cedar_validate_schema
 - "Modify an existing policy" -> cedar_check_policy_change FIRST (returns AVP UpdatePolicy classification)
 
+Workspace auto-discovery: if cedar_validate / cedar_authorize / cedar_explain reports missing schema, policies, or entities, retry with the field omitted; the tool auto-discovers from the loaded workspace store (schema.cedarschema, policies/, entities/). Pass store: "<name>" for multi-store deployments. Ask the user for inline input only as a last resort.
+
 Do NOT use Read or Bash to inspect Cedar policy semantics. The server tools encode Cedar/AVP knowledge that does not live in the files.`;
 
 export function createServer(): McpServer {
@@ -139,7 +141,7 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_authorize",
-    "Evaluate a Cedar authorization request against policies and entities. Returns the decision (Allow/Deny), the determining policies, and any evaluation errors. ALWAYS call this for any 'would X be allowed?' or 'why was Y denied?' question. You CANNOT simulate an authorization decision by reading the policy files; only the Cedar engine implements the full evaluation semantics (default-deny, forbid-overrides-permit, attribute guards, action group membership, schema-validated entity types). Accepts inline policy text OR a cedar:// resource reference.",
+    "Evaluate a Cedar authorization request against policies and entities. Returns the decision (Allow/Deny), the determining policies, and any evaluation errors. ALWAYS call this for any 'would X be allowed?' or 'why was Y denied?' question. You CANNOT simulate an authorization decision by reading the policy files; only the Cedar engine implements the full evaluation semantics (default-deny, forbid-overrides-permit, attribute guards, action group membership, schema-validated entity types). Accepts inline policy text OR a cedar:// resource reference. When policies / schema / entities are omitted and a single MCP root is loaded, the missing inputs are auto-discovered from the workspace; the response's auto_discovered field reports each source store.",
     {
       policies: z.string().optional().describe("Cedar policy text (one or more policies). Omit if using policy_ref."),
       policy_ref: z.string().optional().describe("cedar:// URI to load policies from a configured store, e.g. cedar://policies/blue"),
@@ -151,65 +153,18 @@ export function createServer(): McpServer {
       schema: z.string().optional().describe("Optional Cedar schema (JSON or .cedarschema format) — enables request validation"),
       schema_ref: z.string().optional().describe("cedar:// URI to load schema from a configured store, e.g. cedar://schema/blue"),
       context: z.string().optional().describe("Optional JSON object with context attributes"),
+      store: z.string().optional().describe("Optional store name (a configured MCP root) for workspace auto-discovery. Use when multiple stores are loaded and the tool needs to choose one for policies / schema / entities lookup."),
     },
     async (input) => {
-      // Resolve policy_ref / schema_ref — inline values take precedence.
-      // When policy_ref points at a whole store (cedar://policies/{store}),
-      // load each policy file separately so its basename surfaces as the
-      // determining-policies id rather than collapsing into a single blob.
-      let policies = input.policies;
-      let policiesMap: Record<string, string> | undefined;
-      if (!policies && input.policy_ref) {
-        const storeMatch = input.policy_ref.match(/^cedar:\/\/policies\/([^/]+)$/);
-        const singleMatch = input.policy_ref.match(/^cedar:\/\/policies\/([^/]+)\/([^/]+)$/);
-        if (storeMatch) {
-          const storeName = storeMatch[1]!;
-          try {
-            const ids = storeManager.listPolicies(storeName);
-            policiesMap = {};
-            for (const id of ids) {
-              policiesMap[id] = storeManager.readPolicy(storeName, id);
-            }
-          } catch (e) {
-            const message = e instanceof Error ? e.message : String(e);
-            return { content: [{ type: "text", text: JSON.stringify({ error: message }) }] };
-          }
-        } else if (singleMatch) {
-          const storeName = singleMatch[1]!;
-          const policyId = singleMatch[2]!;
-          try {
-            policiesMap = { [policyId]: storeManager.readPolicy(storeName, policyId) };
-          } catch (e) {
-            const message = e instanceof Error ? e.message : String(e);
-            return { content: [{ type: "text", text: JSON.stringify({ error: message }) }] };
-          }
-        } else {
-          const resolved = resolveRef(input.policy_ref);
-          if ("error" in resolved) return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }] };
-          policies = resolved.content;
-        }
+      // 10d workspace auto-discovery lives in handleAuthorizeMcp so tests can
+      // exercise the resolution path directly. The wrapper resolves missing
+      // policies / schema / entities from a single MCP root, so a call never
+      // mixes blue policies with green entities.
+      const outcome = await handleAuthorizeMcp(input, resolveRef);
+      if ("error" in outcome) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: outcome.error }) }] };
       }
-      if (!policies && !policiesMap) return { content: [{ type: "text", text: JSON.stringify({ error: "Either policies or policy_ref is required" }) }] };
-
-      let schema = input.schema;
-      if (!schema && input.schema_ref) {
-        const resolved = resolveRef(input.schema_ref);
-        if ("error" in resolved) return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }] };
-        schema = resolved.content;
-      }
-
-      let entities = input.entities;
-      if (!entities && input.entities_ref) {
-        const resolved = resolveRef(input.entities_ref);
-        if ("error" in resolved) return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }] };
-        entities = resolved.content;
-      }
-      if (!entities) return { content: [{ type: "text", text: JSON.stringify({ error: "Either entities or entities_ref is required" }) }] };
-
-      const result = await handleAuthorize({ ...input, policies, policiesMap, schema, entities });
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-      };
+      return { content: [{ type: "text", text: JSON.stringify(outcome.result, null, 2) }] };
     }
   );
 
@@ -239,37 +194,22 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_validate",
-    "Validate Cedar policies, with OR without a schema. Two modes: syntax-only (no schema, parser-only, catches typos and bad scopes) and syntax-and-schema (full parse plus type-check against a Cedar schema). Returns parse errors, schema-type errors, and warnings with source locations; the `validation_mode` field in the response tells you which mode ran. ALWAYS call this before claiming a policy is valid or before recommending it to a user. You CANNOT determine policy validity by reading the file; the Cedar parser is the only authority on syntax, attribute typing, action-applies-to checks, and UnsafeOptionalAttributeAccess warnings. Accepts inline text OR cedar:// resource references.",
+    "Validate Cedar policies, with OR without a schema. Two modes: syntax-only (no schema, parser-only, catches typos and bad scopes) and syntax-and-schema (full parse plus type-check against a Cedar schema). Returns parse errors, schema-type errors, and warnings with source locations; the `validation_mode` field in the response tells you which mode ran. ALWAYS call this before claiming a policy is valid or before recommending it to a user. You CANNOT determine policy validity by reading the file; the Cedar parser is the only authority on syntax, attribute typing, action-applies-to checks, and UnsafeOptionalAttributeAccess warnings. Accepts inline text OR cedar:// resource references. When schema is omitted and a single MCP root is loaded, the schema is auto-discovered from the workspace; the response's auto_discovered field reports the source store.",
     {
       policies: z.string().optional().describe("Cedar policy text (one or more policies). Omit if using policy_ref."),
       policy_ref: z.string().optional().describe("cedar:// URI to load policies, e.g. cedar://policies/blue"),
-      schema: z.string().optional().describe("Cedar schema — JSON object or .cedarschema text. Omit if using schema_ref."),
+      schema: z.string().optional().describe("Cedar schema — JSON object or .cedarschema text. Omit if using schema_ref or to auto-discover from a loaded workspace store."),
       schema_ref: z.string().optional().describe("cedar:// URI to load schema, e.g. cedar://schema/blue"),
+      store: z.string().optional().describe("Optional store name (a configured MCP root) for workspace auto-discovery. Use when multiple stores are loaded and the tool needs to choose one for schema lookup."),
     },
     async (input) => {
-      let policies = input.policies;
-      if (!policies && input.policy_ref) {
-        const resolved = resolveRef(input.policy_ref);
-        if ("error" in resolved) return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }] };
-        policies = resolved.content;
+      // 10d workspace auto-discovery lives in handleValidateMcp so tests can
+      // exercise the resolution path directly.
+      const outcome = await handleValidateMcp(input, resolveRef);
+      if ("error" in outcome) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: outcome.error }) }] };
       }
-      if (!policies) return { content: [{ type: "text", text: JSON.stringify({ error: "Either policies or policy_ref is required" }) }] };
-
-      let schema = input.schema;
-      if (!schema && input.schema_ref) {
-        const resolved = resolveRef(input.schema_ref);
-        if ("error" in resolved) return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }] };
-        schema = resolved.content;
-      }
-      // Schema is optional. When absent, handleValidate runs in syntax-only mode
-      // (parse-only). The response's validation_mode field tells the caller which
-      // mode ran. This unblocks the "quick typo check on a 5-line policy" path
-      // where the user has no schema yet and forcing them to construct one is hostile.
-
-      const result = await handleValidate({ policies, schema });
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-      };
+      return { content: [{ type: "text", text: JSON.stringify(outcome.result, null, 2) }] };
     }
   );
 
@@ -328,16 +268,21 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_explain",
-    "Explain one or more Cedar policies in structured form, derived from the parsed AST (not from text inspection). ALWAYS call this when summarizing what a policy permits, walking a user through inherited policies, or detecting Cedar patterns (RBAC role-membership, ABAC attribute conditions, ReBAC relationship checks, optional-attribute guards, path-matching with depth limiting). Reading the policy text does not reliably yield correct structural breakdown or pattern detection; the AST is the authority. Accepts a single policy, a template, or a full policy set.",
+    "Explain one or more Cedar policies in structured form, derived from the parsed AST (not from text inspection). ALWAYS call this when summarizing what a policy permits, walking a user through inherited policies, or detecting Cedar patterns (RBAC role-membership, ABAC attribute conditions, ReBAC relationship checks, optional-attribute guards, path-matching with depth limiting). Reading the policy text does not reliably yield correct structural breakdown or pattern detection; the AST is the authority. Accepts a single policy, a template, or a full policy set. When schema is omitted and a single MCP root is loaded, the schema is auto-discovered from the workspace; the response's auto_discovered field reports the source store.",
     {
       policy: z.string().describe("Cedar policy text (single policy, template, or policy set with multiple policies)"),
       schema: z.string().optional().describe("Optional Cedar schema for richer context"),
+      schema_ref: z.string().optional().describe("cedar:// URI to load schema, e.g. cedar://schema/blue"),
+      store: z.string().optional().describe("Optional store name (a configured MCP root) for workspace auto-discovery. Use when multiple stores are loaded and the tool needs to choose one for schema lookup."),
     },
     async (input) => {
-      const result = await handleExplainMany(input);
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-      };
+      // 10d workspace auto-discovery lives in handleExplainMcp so tests can
+      // exercise the resolution path directly.
+      const outcome = await handleExplainMcp(input, resolveRef);
+      if ("error" in outcome) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: outcome.error }) }] };
+      }
+      return { content: [{ type: "text", text: JSON.stringify(outcome.result, null, 2) }] };
     }
   );
 

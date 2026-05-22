@@ -13,6 +13,7 @@ import {
   normalizePrincipalRef,
 } from "../utils/format-detector.js";
 import type { FormatDetectionResult } from "../utils/format-detector.js";
+import { storeManager } from "../resources/store-manager.js";
 
 export interface AuthorizeInput {
   /** Concatenated Cedar policy text. Mutually exclusive with policiesMap. */
@@ -29,6 +30,12 @@ export interface AuthorizeInput {
   entities: string;
   schema?: string;
   context?: string;
+  /**
+   * Optional store name to disambiguate workspace auto-discovery (10d) at the
+   * MCP layer. handleAuthorize itself does not consult the StoreManager; the
+   * server.ts handler resolves this and supplies inputs before calling in.
+   */
+  store?: string;
 }
 
 export type AuthorizeDecisionReason =
@@ -45,6 +52,17 @@ export interface AuthorizeResult {
   format_detected?: string;
   format_note?: string;
   error?: string;
+  /**
+   * 10d workspace auto-discovery: populated by the server.ts MCP handler when
+   * one or more inputs were resolved from a loaded MCP root rather than from
+   * inline params. Each subfield names the store that satisfied the missing
+   * input. Surfaces so the caller can trace which store the decision used.
+   */
+  auto_discovered?: {
+    policies_from?: string;
+    schema_from?: string;
+    entities_from?: string;
+  };
 }
 
 const DENY_RESULT = (error: string, detection?: FormatDetectionResult): AuthorizeResult => ({
@@ -261,4 +279,174 @@ export async function handleAuthorize(input: AuthorizeInput): Promise<AuthorizeR
     format_detected: detection.format,
     format_note: detection.note,
   };
+}
+
+// ─── 10d workspace auto-discovery wrapper ────────────────────────────────────
+
+/**
+ * Inputs accepted by the MCP-level authorize entry point. Wider than
+ * `AuthorizeInput` because it also accepts the `_ref` shapes the MCP layer
+ * resolves before reaching `handleAuthorize`. Kept distinct so the WASM-level
+ * handler does not need to know about MCP plumbing.
+ */
+export interface AuthorizeMcpInput {
+  policies?: string;
+  policy_ref?: string;
+  policiesMap?: Record<string, string>;
+  principal: string | Record<string, unknown>;
+  action: string | Record<string, unknown>;
+  resource: string | Record<string, unknown>;
+  entities?: string;
+  entities_ref?: string;
+  schema?: string;
+  schema_ref?: string;
+  context?: string;
+  store?: string;
+}
+
+/**
+ * 10d workspace auto-discovery wrapper for `cedar_authorize`.
+ *
+ * Resolves missing policies / schema / entities from the loaded MCP roots,
+ * then delegates to `handleAuthorize`. A single store backs all three so a
+ * call never mixes policies from one workspace with entities from another.
+ *
+ * Multi-store deployments with no explicit `store` parameter surface an
+ * ambiguity error in the `{ error }` envelope. None-loaded falls through to
+ * the "policies / entities required" errors that the MCP layer already used.
+ *
+ * Returns either:
+ *  - `{ result }` -- the AuthorizeResult, with `auto_discovered` set when any
+ *    input was sourced from the workspace.
+ *  - `{ error }`  -- a string error suitable for the standard `{ error: ... }`
+ *    MCP envelope.
+ *
+ * The server.ts handler wraps this and serializes the result back to MCP.
+ * Tests can call it directly after setting up the `storeManager` singleton
+ * with `loadFromRoots([...])`.
+ */
+export async function handleAuthorizeMcp(
+  input: AuthorizeMcpInput,
+  resolveRef: (uri: string) => { content: string } | { error: string },
+): Promise<{ result: AuthorizeResult } | { error: string }> {
+  const needsAuto =
+    (!input.policies && !input.policy_ref && !input.policiesMap) ||
+    (!input.schema && !input.schema_ref) ||
+    (!input.entities && !input.entities_ref);
+
+  let autoStore: string | undefined;
+  if (needsAuto) {
+    if (input.store) {
+      if (!storeManager.getStore(input.store)) {
+        const available = storeManager.listStoreNames().join(", ") || "none";
+        return { error: `Store not found: "${input.store}". Available stores: ${available}.` };
+      }
+      autoStore = input.store;
+    } else {
+      const def = storeManager.getDefaultStore();
+      if (def.kind === "single") autoStore = def.store.name;
+      else if (def.kind === "ambiguous") {
+        return { error: `Multiple stores are loaded (${def.names.join(", ")}). Pass store: "<name>" to choose.` };
+      }
+      // def.kind === "none": leave autoStore undefined and let the
+      // "Either X or X_ref is required" branches below fire.
+    }
+  }
+
+  // Resolve policy_ref / policies. The cedar://policies/{store} loop pattern
+  // keeps each policy's basename as its determining-policies id rather than
+  // collapsing the set into a single blob.
+  let policies = input.policies;
+  let policiesMap = input.policiesMap;
+  let policiesFrom: string | undefined;
+  if (!policies && !policiesMap && input.policy_ref) {
+    const storeMatch = input.policy_ref.match(/^cedar:\/\/policies\/([^/]+)$/);
+    const singleMatch = input.policy_ref.match(/^cedar:\/\/policies\/([^/]+)\/([^/]+)$/);
+    if (storeMatch) {
+      const storeName = storeMatch[1]!;
+      try {
+        const ids = storeManager.listPolicies(storeName);
+        policiesMap = {};
+        for (const id of ids) policiesMap[id] = storeManager.readPolicy(storeName, id);
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : String(e) };
+      }
+    } else if (singleMatch) {
+      const storeName = singleMatch[1]!;
+      const policyId = singleMatch[2]!;
+      try {
+        policiesMap = { [policyId]: storeManager.readPolicy(storeName, policyId) };
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : String(e) };
+      }
+    } else {
+      const resolved = resolveRef(input.policy_ref);
+      if ("error" in resolved) return { error: resolved.error };
+      policies = resolved.content;
+    }
+  }
+  if (!policies && !policiesMap && autoStore) {
+    try {
+      const ids = storeManager.listPolicies(autoStore);
+      policiesMap = {};
+      for (const id of ids) policiesMap[id] = storeManager.readPolicy(autoStore, id);
+      policiesFrom = autoStore;
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+  if (!policies && !policiesMap) return { error: "Either policies or policy_ref is required" };
+
+  let schema = input.schema;
+  let schemaFrom: string | undefined;
+  if (!schema && input.schema_ref) {
+    const resolved = resolveRef(input.schema_ref);
+    if ("error" in resolved) return { error: resolved.error };
+    schema = resolved.content;
+  }
+  if (!schema && autoStore) {
+    try {
+      schema = storeManager.readSchema(autoStore);
+      schemaFrom = autoStore;
+    } catch {
+      // Store has no schema file; schema stays undefined (it is optional).
+    }
+  }
+
+  let entities = input.entities;
+  let entitiesFrom: string | undefined;
+  if (!entities && input.entities_ref) {
+    const resolved = resolveRef(input.entities_ref);
+    if ("error" in resolved) return { error: resolved.error };
+    entities = resolved.content;
+  }
+  if (!entities && autoStore) {
+    try {
+      entities = storeManager.readAllEntities(autoStore);
+      entitiesFrom = autoStore;
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+  if (!entities) return { error: "Either entities or entities_ref is required" };
+
+  const result = await handleAuthorize({
+    policies,
+    policiesMap,
+    principal: input.principal,
+    action: input.action,
+    resource: input.resource,
+    entities,
+    schema,
+    context: input.context,
+  });
+
+  const autoDiscovered: { policies_from?: string; schema_from?: string; entities_from?: string } = {};
+  if (policiesFrom) autoDiscovered.policies_from = policiesFrom;
+  if (schemaFrom) autoDiscovered.schema_from = schemaFrom;
+  if (entitiesFrom) autoDiscovered.entities_from = entitiesFrom;
+  if (Object.keys(autoDiscovered).length > 0) {
+    result.auto_discovered = autoDiscovered;
+  }
+  return { result };
 }

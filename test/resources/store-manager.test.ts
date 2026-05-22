@@ -258,6 +258,42 @@ describe("StoreManager", () => {
     });
   });
 
+  describe("getDefaultStore (10d auto-discovery)", () => {
+    it("returns { kind: 'none' } when no stores are loaded", () => {
+      // Fresh manager — nothing loaded.
+      const result = manager.getDefaultStore();
+      expect(result.kind).toBe("none");
+    });
+
+    it("returns { kind: 'single', store } when exactly one store is loaded", () => {
+      const storePath = createTestStore(tmpDir, "blue");
+      manager.loadFromRoots([{ uri: `file://${storePath}`, name: "blue" }]);
+
+      const result = manager.getDefaultStore();
+      expect(result.kind).toBe("single");
+      if (result.kind === "single") {
+        expect(result.store.name).toBe("blue");
+        expect(result.store.path).toBe(storePath);
+      }
+    });
+
+    it("returns { kind: 'ambiguous', names } when multiple stores are loaded", () => {
+      createTestStore(tmpDir, "blue");
+      createTestStore(tmpDir, "green");
+      manager.loadFromRoots([
+        { uri: `file://${tmpDir}/blue`, name: "blue" },
+        { uri: `file://${tmpDir}/green`, name: "green" },
+      ]);
+
+      const result = manager.getDefaultStore();
+      expect(result.kind).toBe("ambiguous");
+      if (result.kind === "ambiguous") {
+        expect(result.names).toEqual(expect.arrayContaining(["blue", "green"]));
+        expect(result.names).toHaveLength(2);
+      }
+    });
+  });
+
   describe("readAllEntities", () => {
     it("merges entity arrays from all files into one JSON array", () => {
       const storePath = createTestStore(tmpDir, "blue");

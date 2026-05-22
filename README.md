@@ -248,9 +248,25 @@ The response's `validation_mode` field tells you which mode ran.
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | `policies` | yes (or `policy_ref`) | Cedar policy text (one or more policies) |
-| `schema` | no | Cedar schema (JSON object or `.cedarschema` text). Omit for syntax-only mode. |
+| `schema` | no | Cedar schema (JSON object or `.cedarschema` text). Omit for syntax-only mode or to auto-discover from the workspace store. |
 | `policy_ref` | no | `cedar://` URI pointing to a policy in a configured store |
 | `schema_ref` | no | `cedar://` URI pointing to a schema in a configured store |
+| `store` | no | Store name (a configured MCP root). Use to disambiguate auto-discovery when multiple stores are loaded. |
+
+**Workspace auto-discovery.** When `schema` and `schema_ref` are both omitted and exactly one MCP root is loaded, the tool reads the schema from that store and upgrades the run to `syntax_and_schema` mode. The response's `auto_discovered.schema_from` field names the source store. With multiple stores loaded, the response is an actionable error listing the candidate names. Pass `store: "<name>"` to choose one.
+
+```json
+// request: { "policies": "permit (principal in DocMgmt::Role::\"admin\", action, resource);" }
+// (cedar-sandbox is the only loaded MCP root)
+{
+  "valid": true,
+  "errors": [],
+  "warnings": [],
+  "policy_count": 1,
+  "validation_mode": "syntax_and_schema",
+  "auto_discovered": { "schema_from": "cedar-sandbox" }
+}
+```
 
 **Syntax-only check (no schema needed):**
 
@@ -337,15 +353,35 @@ Evaluates an authorization request locally against your policies and entities. R
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `policies` | yes (or `policy_ref`) | Cedar policy text |
+| `policies` | yes (or `policy_ref`, or auto-discovered) | Cedar policy text |
 | `principal` | yes | Entity reference, e.g. `DocMgmt::User::"alice"` |
 | `action` | yes | Entity reference, e.g. `DocMgmt::Action::"read"` |
 | `resource` | yes | Entity reference, e.g. `DocMgmt::Document::"doc-001"` |
-| `entities` | yes | JSON array of entity objects (uid, attrs, parents) |
-| `schema` | no (or `schema_ref`) | Cedar schema; enables request validation |
+| `entities` | yes (or `entities_ref`, or auto-discovered) | JSON array of entity objects (uid, attrs, parents) |
+| `schema` | no (or `schema_ref`, or auto-discovered) | Cedar schema; enables request validation |
 | `context` | no | JSON object with context attributes |
 | `policy_ref` | no | `cedar://` URI for policy store reference |
 | `schema_ref` | no | `cedar://` URI for schema reference |
+| `entities_ref` | no | `cedar://` URI for an entities file reference |
+| `store` | no | Store name (a configured MCP root). Use to disambiguate auto-discovery when multiple stores are loaded. |
+
+**Workspace auto-discovery.** When any of `policies` / `schema` / `entities` (and their `_ref` siblings) are omitted and exactly one MCP root is loaded, the tool reads each missing input from that store: `policies/*.cedar` files (per-policy basenames preserved as determining-policy IDs), `schema.cedarschema` or `schema.json`, and the entities under `entities/*.json` merged into one array. The response's `auto_discovered` field reports which store satisfied each missing input. With multiple stores loaded, the response is an actionable error listing the candidate names. Pass `store: "<name>"` to choose one.
+
+```json
+// request: { "principal": "DocMgmt::User::\"alice\"", "action": "DocMgmt::Action::\"READ\"", "resource": "DocMgmt::Document::\"doc-public\"" }
+// (cedar-sandbox is the only loaded MCP root)
+{
+  "decision": "Allow",
+  "determining_policies": ["admin"],
+  "errors": [],
+  "decision_reason": "permit_policy_fired",
+  "auto_discovered": {
+    "policies_from": "cedar-sandbox",
+    "schema_from": "cedar-sandbox",
+    "entities_from": "cedar-sandbox"
+  }
+}
+```
 
 **Allow:**
 
@@ -506,6 +542,21 @@ Explains a Cedar policy in plain English with pattern detection.
 |-----------|----------|-------------|
 | `policy` | yes | A single Cedar policy (not a policy set) |
 | `schema` | no | Cedar schema; improves entity type descriptions |
+| `schema_ref` | no | `cedar://` URI for schema reference |
+| `store` | no | Store name (a configured MCP root). Use to disambiguate auto-discovery when multiple stores are loaded. |
+
+**Workspace auto-discovery.** When `schema` and `schema_ref` are both omitted and exactly one MCP root is loaded, the tool reads the schema from that store. The response's `auto_discovered.schema_from` field names the source store. The schema is optional for explain, so a single store with no schema file still produces a result. With multiple stores loaded and no `store` parameter, the response is an actionable error listing the candidate names.
+
+```json
+// request: { "policy": "permit (principal in DocMgmt::Role::\"admin\", action, resource);" }
+// (cedar-sandbox is the only loaded MCP root)
+{
+  "effect": "permit",
+  "summary": "PERMITS any principal in role admin to perform any action on any resource.",
+  "patterns_detected": ["role_based_access", "unrestricted_action", "unrestricted_resource"],
+  "auto_discovered": { "schema_from": "cedar-sandbox" }
+}
+```
 
 **Output shape:**
 

@@ -1,5 +1,13 @@
-import { describe, it, expect } from "vitest";
-import { handleExplain, handleExplainMany } from "../../src/tools/explain.js";
+import { describe, it, expect, afterEach } from "vitest";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { handleExplain, handleExplainMany, handleExplainMcp } from "../../src/tools/explain.js";
+import { storeManager } from "../../src/resources/store-manager.js";
+
+const noResolve = (uri: string): { content: string } | { error: string } => ({
+  error: `unexpected resolveRef call in auto-discovery test: ${uri}`,
+});
 
 // Dataset 7 test cases — generic attribute names only.
 
@@ -163,5 +171,51 @@ unless {
       expect(result.policies[1]!.index).toBe(1);
       expect(result.policies[2]!.index).toBe(2);
     }
+  });
+});
+
+describe("cedar_explain — 10d auto-discovery", () => {
+  const tempDirs: string[] = [];
+  const SCHEMA_TEXT = `namespace DocMgmt {
+  entity User in [Role];
+  entity Role;
+  entity Document = { classification: String };
+  action READ appliesTo { principal: [User], resource: [Document], context: {} };
+}`;
+
+  function makeWorkspace(name: string): string {
+    const dir = mkdtempSync(join(tmpdir(), `cedar-explain-auto-${name}-`));
+    mkdirSync(join(dir, "policies"), { recursive: true });
+    writeFileSync(join(dir, "schema.cedarschema"), SCHEMA_TEXT);
+    return dir;
+  }
+
+  afterEach(() => {
+    storeManager.loadFromRoots([]);
+    while (tempDirs.length > 0) {
+      const dir = tempDirs.pop()!;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("single store loaded auto-pulls the schema and surfaces auto_discovered.schema_from", async () => {
+    const ws = makeWorkspace("single");
+    tempDirs.push(ws);
+    storeManager.loadFromRoots([{ uri: `file://${ws}`, name: "workspace" }]);
+
+    const outcome = await handleExplainMcp(
+      {
+        policy: `permit (principal in DocMgmt::Role::"admin", action == DocMgmt::Action::"READ", resource);`,
+      },
+      noResolve,
+    );
+
+    expect("error" in outcome).toBe(false);
+    if ("error" in outcome) return;
+    // Single-policy input returns ExplainResult directly. Either shape carries
+    // auto_discovered when discovery fired, so assert on it without narrowing.
+    expect((outcome.result as { auto_discovered?: { schema_from?: string } }).auto_discovered).toEqual({
+      schema_from: "workspace",
+    });
   });
 });

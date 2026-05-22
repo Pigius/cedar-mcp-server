@@ -1,8 +1,30 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { handleValidate } from "../../src/tools/validate.js";
+import { storeManager } from "../../src/resources/store-manager.js";
 import { POLICIES, SCHEMA_JSON } from "../fixtures/docmgmt.js";
 
 const SCHEMA_STR = JSON.stringify(SCHEMA_JSON);
+
+// Minimal Cedar schema reused for the 10d auto-discovery fixtures below.
+const DOCMGMT_SCHEMA_CEDARSCHEMA = `namespace DocMgmt {
+  entity User in [Role] = { name: String, email: String };
+  entity Role;
+  entity Document in [Folder] = { owner: String, classification: String };
+  entity Folder;
+  action READ appliesTo { principal: [User], resource: [Document], context: {} };
+  action WRITE appliesTo { principal: [User], resource: [Document], context: {} };
+  action DELETE appliesTo { principal: [User], resource: [Document], context: {} };
+}`;
+
+function makeAutoDiscoveryStore(name: string): string {
+  const dir = mkdtempSync(join(tmpdir(), `cedar-validate-auto-${name}-`));
+  mkdirSync(join(dir, "policies"), { recursive: true });
+  writeFileSync(join(dir, "schema.cedarschema"), DOCMGMT_SCHEMA_CEDARSCHEMA);
+  return dir;
+}
 
 describe("cedar_validate", () => {
   it("returns valid for correct policies against schema", async () => {
@@ -150,5 +172,68 @@ describe("cedar_validate — M1 hint for common typos", () => {
       // Only assert when there is an error to check; the point is we do not over-suggest
       expect(result.errors[0]!.hint).toBeNull();
     }
+  });
+});
+
+describe("cedar_validate — 10d auto-discovery", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(() => {
+    // Reset the singleton store manager so per-test state never leaks. Also
+    // tear down the temp workspace directories created during the test.
+    storeManager.loadFromRoots([]);
+    while (tempDirs.length > 0) {
+      const dir = tempDirs.pop()!;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("pulls the schema from the single loaded store when input.schema is omitted", async () => {
+    const storePath = makeAutoDiscoveryStore("single");
+    tempDirs.push(storePath);
+    storeManager.loadFromRoots([{ uri: `file://${storePath}`, name: "workspace" }]);
+
+    const result = await handleValidate({ policies: POLICIES });
+
+    expect(result.valid).toBe(true);
+    expect(result.validation_mode).toBe("syntax_and_schema");
+    expect(result.auto_discovered).toEqual({ schema_from: "workspace" });
+  });
+
+  it("honors an explicit store parameter even when multiple stores are loaded", async () => {
+    const blue = makeAutoDiscoveryStore("blue");
+    const green = makeAutoDiscoveryStore("green");
+    tempDirs.push(blue, green);
+    storeManager.loadFromRoots([
+      { uri: `file://${blue}`, name: "blue" },
+      { uri: `file://${green}`, name: "green" },
+    ]);
+
+    const result = await handleValidate({ policies: POLICIES, store: "green" });
+
+    expect(result.valid).toBe(true);
+    expect(result.validation_mode).toBe("syntax_and_schema");
+    expect(result.auto_discovered).toEqual({ schema_from: "green" });
+  });
+
+  it("returns an ambiguity error when multiple stores are loaded and no store is passed", async () => {
+    const blue = makeAutoDiscoveryStore("blue");
+    const green = makeAutoDiscoveryStore("green");
+    tempDirs.push(blue, green);
+    storeManager.loadFromRoots([
+      { uri: `file://${blue}`, name: "blue" },
+      { uri: `file://${green}`, name: "green" },
+    ]);
+
+    const result = await handleValidate({ policies: POLICIES });
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]!.message).toMatch(/Multiple stores are loaded/);
+    expect(result.errors[0]!.message).toContain("blue");
+    expect(result.errors[0]!.message).toContain("green");
+    expect(result.errors[0]!.message).toMatch(/Pass store/);
+    // Stays in syntax_only because we never picked a schema to type-check against.
+    expect(result.validation_mode).toBe("syntax_only");
   });
 });

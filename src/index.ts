@@ -1,8 +1,26 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { RootsListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
+import { existsSync } from "node:fs";
+import { join, basename } from "node:path";
 import { createServer } from "./server.js";
 import { storeManager } from "./resources/store-manager.js";
 import { startHttpServer } from "./http-server.js";
+
+/**
+ * A directory "looks like a Cedar workspace" if it has at least one of:
+ *   - schema.cedarschema  (preferred)
+ *   - schema.json         (fallback)
+ *   - policies/           (per-file policies layout)
+ *
+ * This is the same convention StoreManager uses to read a loaded root.
+ */
+function looksLikeCedarWorkspace(path: string): boolean {
+  return (
+    existsSync(join(path, "schema.cedarschema")) ||
+    existsSync(join(path, "schema.json")) ||
+    existsSync(join(path, "policies"))
+  );
+}
 
 interface ParsedArgs {
   mode: "stdio" | "http" | "help";
@@ -96,20 +114,37 @@ Examples:
 }
 
 async function loadRootsStdio(server: Awaited<ReturnType<typeof createServer>>) {
+  let clientRoots: Array<{ uri: string; name?: string }> = [];
+  let clientSupportsRoots = true;
   try {
     const result = await server.server.listRoots();
-    storeManager.loadFromRoots(result.roots);
-    if (result.roots.length === 0) {
-      // Observability: future dogfood rounds need to see whether the client
-      // returned empty (Claude Code stdio currently does this) vs. threw
-      // (older clients with no roots capability). Different cause, different fix.
-      console.error("[cedar-mcp-server] MCP client returned 0 roots; cedar:// resources will be empty until the client advertises a workspace root. See README 'Roots in stdio vs HTTP'.");
-    } else {
-      console.error(`[cedar-mcp-server] Loaded ${result.roots.length} root(s) from MCP client: ${result.roots.map((r) => r.uri).join(", ")}`);
-    }
+    clientRoots = result.roots;
   } catch {
-    // Client may not support roots — proceed with empty store list
-    console.error("[cedar-mcp-server] MCP client does not support roots/list; cedar:// resources will be empty. Use --http with --root flags for a deployer-configured store.");
+    clientSupportsRoots = false;
+  }
+
+  // Round 3 dogfood (2026-05-22) found that Claude Code stdio does not
+  // advertise the workspace as a root, so this branch is the load-bearing
+  // path for the common "user runs claude in their Cedar repo" case:
+  // if the client gave us nothing AND the cwd has a Cedar layout, load
+  // cwd as a "workspace" store. This is the cwd fallback that makes
+  // workspace auto-discovery (10d) actually do anything in stdio.
+  if (clientRoots.length === 0 && looksLikeCedarWorkspace(process.cwd())) {
+    const cwdRoot = { uri: `file://${process.cwd()}`, name: basename(process.cwd()) || "workspace" };
+    storeManager.loadFromRoots([cwdRoot]);
+    console.error(`[cedar-mcp-server] No roots from MCP client; auto-loaded cwd as workspace store: "${cwdRoot.name}" (${cwdRoot.uri}). Cedar tools will auto-discover schema/policies/entities from here.`);
+    return;
+  }
+
+  storeManager.loadFromRoots(clientRoots);
+  if (clientRoots.length === 0) {
+    if (clientSupportsRoots) {
+      console.error("[cedar-mcp-server] MCP client returned 0 roots and cwd does not look like a Cedar workspace (no schema.cedarschema, schema.json, or policies/ dir). Cedar tools will require inline inputs.");
+    } else {
+      console.error("[cedar-mcp-server] MCP client does not support roots/list and cwd does not look like a Cedar workspace. Cedar tools will require inline inputs.");
+    }
+  } else {
+    console.error(`[cedar-mcp-server] Loaded ${clientRoots.length} root(s) from MCP client: ${clientRoots.map((r) => r.uri).join(", ")}`);
   }
 }
 

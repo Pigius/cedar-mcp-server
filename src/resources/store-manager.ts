@@ -58,6 +58,24 @@ export class StoreManager {
     return this.stores.get(name);
   }
 
+  /**
+   * Workspace auto-discovery (10d) helper. Returns:
+   *   - { kind: "none" }       when no stores are loaded.
+   *   - { kind: "single", ... } when exactly one store is loaded.
+   *   - { kind: "ambiguous", names } when multiple stores are loaded and the
+   *     caller did not pass an explicit `store` name to disambiguate.
+   *
+   * Tools call this when a required input ref is missing. Single-store
+   * deployments resolve cleanly; multi-store deployments surface an
+   * actionable error listing the candidates rather than guessing.
+   */
+  getDefaultStore(): { kind: "none" } | { kind: "single"; store: PolicyStore } | { kind: "ambiguous"; names: string[] } {
+    const names = this.listStoreNames();
+    if (names.length === 0) return { kind: "none" };
+    if (names.length === 1) return { kind: "single", store: this.stores.get(names[0]!)! };
+    return { kind: "ambiguous", names };
+  }
+
   // ─── Policy access ──────────────────────────────────────────────────────────
 
   listPolicies(storeName: string): string[] {
