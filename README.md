@@ -195,8 +195,8 @@ AI:  [calls cedar_advise]
      Step 1: Schema (no changes needed; "classification" attribute already exists).
      Step 2: Policy (new_policy_via_create_policy):
        permit (
-         principal in DocMgmt::Role::"contractor",
-         action == DocMgmt::Action::"read",
+         principal in MyApp::Role::"contractor",
+         action == MyApp::Action::"read",
          resource
        )
        when { resource.classification == "external_share" };
@@ -346,9 +346,9 @@ Evaluates an authorization request locally against your policies and entities. R
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | `policies` | yes (or `policy_ref`, or auto-discovered) | Cedar policy text |
-| `principal` | yes | Entity reference, e.g. `DocMgmt::User::"alice"` |
-| `action` | yes | Entity reference, e.g. `DocMgmt::Action::"read"` |
-| `resource` | yes | Entity reference, e.g. `DocMgmt::Document::"doc-001"` |
+| `principal` | yes | Entity reference, e.g. `MyApp::User::"alice"` |
+| `action` | yes | Entity reference, e.g. `MyApp::Action::"read"` |
+| `resource` | yes | Entity reference, e.g. `MyApp::Document::"doc-public"` |
 | `entities` | yes (or `entities_ref`, or auto-discovered) | JSON array of entity objects (uid, attrs, parents) |
 | `schema` | no (or `schema_ref`, or auto-discovered) | Cedar schema; enables request validation |
 | `context` | no | JSON object with context attributes |
@@ -794,10 +794,9 @@ The assistant translates this to a cedar_advise call with `intent: "Make editors
   "patterns_detected_in_store": [{ "pattern": "membership", "count": 3 }],
   "applicable_gotchas": [
     {
-      "id": "optional_attribute_guard",
-      "severity": "high",
-      "description": "Optional schema attributes MUST be guarded with `entity has attr` before access...",
-      "avp_error_category": "UnsafeOptionalAttributeAccess"
+      "id": "array_containment_syntax",
+      "severity": "medium",
+      "description": "Cedar array containment is left-first: `[\"a\", \"b\"].contains(attr)` — the ARRAY is on the left. Writing `attr in [\"a\", \"b\"]` is an entity-hierarchy check, not a value containment check."
     }
   ],
   "avp_update_policy_rules": {
@@ -1507,10 +1506,10 @@ A few things that shape how you write policies:
 ```cedar
 forbid (principal, action, resource)
 when { resource.classification == "top_secret" }
-unless { principal in DocMgmt::Role::"admin" };
+unless { principal in MyApp::Role::"admin" };
 ```
 
-**Namespaces are part of entity type names.** `DocMgmt::User::"alice"` is the canonical form. The double colon separates namespace from type, and the quoted string is the entity ID.
+**Namespaces are part of entity type names.** `MyApp::User::"alice"` is the canonical form. The double colon separates namespace from type, and the quoted string is the entity ID.
 
 **Start with `cedar_advise`.** Describe what you want in plain language and let the server produce a starting policy. Then validate it with `cedar_validate` and verify the decision with `cedar_authorize`.
 
