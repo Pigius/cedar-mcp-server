@@ -333,4 +333,69 @@ describe("cedar_generate_sample_request", () => {
     expect(result.action).toBe('Mismatch::Action::"userRead"');
     void policy;  // kept above as a written-out exploration; not used
   });
+
+  // ─── kickoff-14 14b: double-namespace fix ──────────────────────────────────
+
+  it("kickoff-14 14b: cedarschema-text schema produces single-prefix principal/resource (no MyApp::MyApp::User)", async () => {
+    // The cwd-fallback path for cedar-sandbox supplies a .cedarschema text. The
+    // Cedar WASM `schemaToJsonWithResolvedTypes` emits already-namespaced type
+    // strings ("MyApp::User") for entries declared inside `namespace MyApp { ... }`.
+    // The generator used to wrap that in `${namespace}::${type}` again,
+    // producing `MyApp::MyApp::User::"sample-principal"`. Fix: skip re-prefixing
+    // when the type name already contains "::".
+    const cedarSchema = `namespace MyApp {
+  entity User { name: String };
+  entity Document { owner: String };
+  action "read" appliesTo { principal: User, resource: Document };
+}`;
+    const result = await handleGenerateSample({
+      policy: `permit (principal, action, resource);`,
+      schema: cedarSchema,
+      target_decision: "allow",
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.principal).toBe('MyApp::User::"sample-principal"');
+    expect(result.resource).toBe('MyApp::Document::"sample-resource"');
+    expect(result.action).toBe('MyApp::Action::"read"');
+    // Entity uids must use the same single-namespace form (not "MyApp::MyApp::User").
+    expect(result.entities.some((e) => e.uid.type === "MyApp::User" && e.uid.id === "sample-principal")).toBe(true);
+    expect(result.entities.some((e) => e.uid.type === "MyApp::Document" && e.uid.id === "sample-resource")).toBe(true);
+    expect(result.entities.every((e) => !e.uid.type.startsWith("MyApp::MyApp::"))).toBe(true);
+  });
+
+  it("kickoff-14 14b: a different namespace name (OtherApp) also gets single-prefix output", async () => {
+    const cedarSchema = `namespace OtherApp {
+  entity User { name: String };
+  entity Document;
+  action "read" appliesTo { principal: User, resource: Document };
+}`;
+    const result = await handleGenerateSample({
+      policy: `permit (principal, action, resource);`,
+      schema: cedarSchema,
+      target_decision: "allow",
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.principal).toBe('OtherApp::User::"sample-principal"');
+    expect(result.resource).toBe('OtherApp::Document::"sample-resource"');
+    expect(result.entities.every((e) => !e.uid.type.startsWith("OtherApp::OtherApp::"))).toBe(true);
+  });
+
+  it("kickoff-14 14b: JSON-format schema (already bare types) keeps single namespace", async () => {
+    // Regression: the JSON schema path supplies bare entity-type names ("User",
+    // "Document"), so qualifyEntityType prefixes with the namespace. Existing
+    // tests already exercise this path; this assertion just pins that the fix
+    // didn't accidentally break it.
+    const result = await handleGenerateSample({
+      policy: `permit (principal, action, resource);`,
+      schema: ABAC_SCHEMA,
+      target_decision: "allow",
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.principal).toBe('MyApp::User::"sample-principal"');
+    expect(result.resource).toBe('MyApp::Resource::"sample-resource"');
+    expect(result.entities.every((e) => !e.uid.type.startsWith("MyApp::MyApp::"))).toBe(true);
+  });
 });

@@ -213,6 +213,18 @@ function requiredAttrsFromSchema(
   }
 }
 
+/**
+ * Qualify a bare entity-type name with the schema's namespace. If the name
+ * already carries a `::` separator (which `schemaToJsonWithResolvedTypes`
+ * emits for entries declared inside `namespace X { ... }` cedarschema text),
+ * return it verbatim — re-prefixing produces `MyApp::MyApp::User` style
+ * double-namespace artifacts (kickoff-14 14b).
+ */
+function qualifyEntityType(typeName: string, namespace: string): string {
+  if (typeName.includes("::")) return typeName;
+  return namespace ? `${namespace}::${typeName}` : typeName;
+}
+
 function entityTypesFromSchema(
   schemaJson: unknown,
   namespace: string,
@@ -226,11 +238,11 @@ function entityTypesFromSchema(
     const principalTypes = appliesTo?.["principalTypes"] as string[] | undefined;
     const resourceTypes = appliesTo?.["resourceTypes"] as string[] | undefined;
     return {
-      principalType: principalTypes?.[0] ? `${namespace}::${principalTypes[0]}` : `${namespace}::User`,
-      resourceType: resourceTypes?.[0] ? `${namespace}::${resourceTypes[0]}` : `${namespace}::Resource`,
+      principalType: principalTypes?.[0] ? qualifyEntityType(principalTypes[0], namespace) : qualifyEntityType("User", namespace),
+      resourceType: resourceTypes?.[0] ? qualifyEntityType(resourceTypes[0], namespace) : qualifyEntityType("Resource", namespace),
     };
   } catch {
-    return { principalType: `${namespace}::User`, resourceType: `${namespace}::Resource` };
+    return { principalType: qualifyEntityType("User", namespace), resourceType: qualifyEntityType("Resource", namespace) };
   }
 }
 
