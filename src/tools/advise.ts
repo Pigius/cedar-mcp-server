@@ -221,16 +221,16 @@ function resolveStoreView(storeRef: string | undefined, manager: StoreManager): 
       const onlyStoreName = names[0]!;
       const ctx = buildStoreContext(onlyStoreName, manager);
       if (!ctx) {
-        // Defensive: store is enumerable but context build failed (e.g. missing
-        // schema file). Surface as not_found with the candidate name so the
-        // caller can investigate.
-        return {
-          store_name: onlyStoreName,
-          store_status: "not_found",
-          policy_inventory: [],
-          patterns_detected: [],
-          available_stores: names,
-        };
+        // 11d audit finding: the single loaded store exists in StoreManager but
+        // cannot be grounded (most often: workspace has policies/ but no
+        // schema.cedarschema or schema.json, so `buildStoreContext` throws
+        // inside readSchema and returns null). Returning `not_found` with the
+        // candidate name is self-referential and triggers the next_steps_for_llm
+        // "re-invoke with corrected name from available_stores" advice, which
+        // loops. Degrade to `not_provided` instead: the bundle still carries
+        // the universal Cedar/AVP context, and the LLM treats it as
+        // store-less rather than as a typo'd ref.
+        return { store_status: "not_provided", policy_inventory: [], patterns_detected: [] };
       }
       return {
         store_name: ctx.store_name,

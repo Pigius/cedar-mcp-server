@@ -259,7 +259,7 @@ The response's `validation_mode` field tells you which mode ran.
 **Forcing a mode.** Set `validation_mode` when the default schema-presence heuristic isn't what you want.
 
 - `"auto"` (default): schema presence picks the mode, as described above.
-- `"syntax_only"`: parser-only. Skips workspace auto-discovery entirely and ignores any inline schema you pass. Use when the user explicitly says they have no schema, or for a fast parse-only sanity check inside a Cedar-workspace cwd.
+- `"syntax_only"`: parser-only. Skips workspace auto-discovery entirely and ignores any inline schema, `schema_ref`, or `store` you pass alongside it (the user said parser-only; the tool honors that literally). Use when the user explicitly says they have no schema, or for a fast parse-only sanity check inside a Cedar-workspace cwd.
 - `"syntax_and_schema"`: require a schema. If neither an inline schema nor a workspace schema is resolvable, the response is an error rather than a silent drop to syntax-only. Use when you want to be sure the type-check ran.
 
 ```json

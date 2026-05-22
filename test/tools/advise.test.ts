@@ -310,4 +310,30 @@ describe("cedar_advise — context preparator (v2, no sampling)", () => {
     expect(result.policy_inventory).toEqual([]);
     expect(result.auto_discovered).toBeUndefined();
   });
+
+  it("B25 — 11d audit finding: schemaless single-store auto-resolve degrades to 'not_provided', not self-referential 'not_found'", () => {
+    // A workspace with `policies/` but no schema file triggers cwd-fallback in
+    // index.ts (looksLikeCedarWorkspace passes on policies/ alone) and lands as
+    // a single loaded store. buildStoreContext returns null because readSchema
+    // throws. The pre-fix branch surfaced this as `not_found` with
+    // store_name === available_stores[0], creating a self-referential response
+    // that the next_steps_for_llm "re-invoke with corrected name" advice would
+    // loop on. After the fix the response degrades to `not_provided`: the LLM
+    // gets the universal Cedar / AVP context and treats this as a store-less
+    // call, no loop.
+    const path = join(tmpDir, "schemaless");
+    mkdirSync(join(path, "policies"), { recursive: true });
+    writeFileSync(join(path, "policies", "admin.cedar"), ADMIN_POLICY);
+    // Deliberately NO schema.cedarschema / schema.json
+    manager.loadFromRoots([{ uri: `file://${path}`, name: "schemaless" }]);
+
+    const result = handleAdvise({ intent: "plan a change" }, manager);
+
+    expect(result.store_status).toBe("not_provided");
+    expect(result.store_name).toBeUndefined();
+    expect(result.available_stores).toBeUndefined();
+    expect(result.auto_discovered).toBeUndefined();
+    // Universal context still present.
+    expect(result.cedar_patterns_reference.patterns.length).toBeGreaterThan(0);
+  });
 });
