@@ -236,29 +236,56 @@ See [`avp-cli`](https://github.com/Pigius/avp-cli) for a companion CLI that hand
 
 ### `cedar_validate`
 
-Validates Cedar policies against a schema. Returns errors with hints, source locations, and the policy count.
+Validates Cedar policies with or without a schema. Two modes:
+
+- **Syntax-only** (no schema): runs the parser alone. Catches typos, malformed scopes, bad operators. Cheapest sanity check, useful when you have a 5-line snippet and no schema yet.
+- **Syntax-and-schema** (schema provided): parses then type-checks against the schema. Catches attribute typos, entity type mismatches, action applicability errors, and `UnsafeOptionalAttributeAccess` warnings.
+
+The response's `validation_mode` field tells you which mode ran.
 
 **Inputs:**
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | `policies` | yes (or `policy_ref`) | Cedar policy text (one or more policies) |
-| `schema` | yes (or `schema_ref`) | Cedar schema (JSON object or `.cedarschema` text) |
+| `schema` | no | Cedar schema (JSON object or `.cedarschema` text). Omit for syntax-only mode. |
 | `policy_ref` | no | `cedar://` URI pointing to a policy in a configured store |
 | `schema_ref` | no | `cedar://` URI pointing to a schema in a configured store |
 
-**Valid policy:**
+**Syntax-only check (no schema needed):**
+
+```json
+// request: { "policies": "permit (prinicpal in MyApp::Role::\"admin\", action, resource);" }
+{
+  "valid": false,
+  "errors": [
+    {
+      "policy_id": "",
+      "message": "failed to parse policies from string: found an invalid variable in the policy scope: prinicpal",
+      "hint": "Did you mean 'principal'?",
+      "line": 1,
+      "column": 9
+    }
+  ],
+  "warnings": [],
+  "policy_count": 0,
+  "validation_mode": "syntax_only"
+}
+```
+
+**Valid policy (with schema):**
 
 ```json
 {
   "valid": true,
   "errors": [],
   "warnings": [],
-  "policy_count": 1
+  "policy_count": 1,
+  "validation_mode": "syntax_and_schema"
 }
 ```
 
-**Invalid policy (attribute not found in schema):**
+**Invalid policy, attribute not found in schema:**
 
 ```json
 {
@@ -272,7 +299,8 @@ Validates Cedar policies against a schema. Returns errors with hints, source loc
       "column": 47
     }
   ],
-  "policy_count": 1
+  "policy_count": 1,
+  "validation_mode": "syntax_and_schema"
 }
 ```
 
@@ -290,13 +318,14 @@ Validates Cedar policies against a schema. Returns errors with hints, source loc
       "column": 10
     }
   ],
-  "policy_count": 0
+  "policy_count": 0,
+  "validation_mode": "syntax_and_schema"
 }
 ```
 
-Each error includes `line` and `column` (1-indexed) derived from the WASM parser's source location when available. The `hint` field is populated either from Cedar's own diagnostic help text or from a small built-in typo table for common misspellings (`int` for `in`, `permint` for `permit`, `prinipal` for `principal`, `wen` for `when`, `unles` for `unless`, etc.). When neither applies, `hint` is `null`.
+Each error includes `line` and `column` (1-indexed) derived from the WASM parser's source location when available. The `hint` field is populated either from Cedar's own diagnostic help text or from a small built-in typo table for common misspellings (`int` for `in`, `permint` for `permit`, `prinicpal` / `prinipal` for `principal`, `wen` for `when`, `unles` for `unless`, etc.). When neither applies, `hint` is `null`.
 
-**When to use:** every time you write or modify a policy. Schema validation catches attribute typos, entity type mismatches, and action applicability errors before they become silent runtime surprises.
+**When to use:** every time you write or modify a policy. Syntax-only mode is the fast first pass when iterating on a snippet. Full schema validation catches attribute typos, entity type mismatches, and action applicability errors before they become silent runtime surprises.
 
 ---
 

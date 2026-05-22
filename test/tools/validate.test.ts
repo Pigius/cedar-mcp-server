@@ -10,6 +10,7 @@ describe("cedar_validate", () => {
 
     expect(result.valid).toBe(true);
     expect(result.errors).toHaveLength(0);
+    expect(result.validation_mode).toBe("syntax_and_schema");
   });
 
   it("returns invalid for a policy referencing a non-existent attribute", async () => {
@@ -19,6 +20,7 @@ describe("cedar_validate", () => {
     expect(result.valid).toBe(false);
     expect(result.errors.length).toBeGreaterThan(0);
     expect(result.errors[0].message).toContain("nonexistent");
+    expect(result.validation_mode).toBe("syntax_and_schema");
   });
 
   it("includes policy_count in result", async () => {
@@ -42,6 +44,30 @@ describe("cedar_validate", () => {
 
     const result = await handleValidate({ policies: POLICIES, schema: cedarSchema });
     expect(result.valid).toBe(true);
+  });
+});
+
+describe("cedar_validate — 10a syntax-only mode (no schema)", () => {
+  it("returns parse error with typo hint when schema is omitted and policy contains 'prinicpal'", async () => {
+    const bad = `permit (prinicpal in MyApp::Role::"admin", action, resource);`;
+    const result = await handleValidate({ policies: bad });
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0]!.hint).toMatch(/Did you mean 'principal'\?/);
+    expect(result.errors[0]!.line).toBe(1);
+    expect(result.validation_mode).toBe("syntax_only");
+  });
+
+  it("returns valid for a correctly parsed policy when schema is omitted", async () => {
+    const ok = `permit (principal, action, resource);`;
+    const result = await handleValidate({ policies: ok });
+
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+    expect(result.warnings).toHaveLength(0);
+    expect(result.policy_count).toBe(1);
+    expect(result.validation_mode).toBe("syntax_only");
   });
 });
 

@@ -3,7 +3,8 @@ import type { Schema, DetailedError } from "@cedar-policy/cedar-wasm/nodejs";
 
 export interface ValidateInput {
   policies: string;
-  schema: string;
+  /** Optional. When omitted, validate runs in syntax-only mode (parse-only, no schema typing). */
+  schema?: string;
 }
 
 export interface ValidateError {
@@ -21,6 +22,14 @@ export interface ValidateResult {
   errors: ValidateError[];
   warnings: ValidateError[];
   policy_count: number;
+  /**
+   * Discriminator that tells the caller what was actually checked.
+   * "syntax_only": parser-only run, no schema supplied. Catches parse errors
+   *   (typos, malformed scopes, bad operators) but not attribute typing or
+   *   action applicability.
+   * "syntax_and_schema": full parse + type-check against a Cedar schema.
+   */
+  validation_mode: "syntax_only" | "syntax_and_schema";
 }
 
 /**
@@ -35,6 +44,7 @@ const TYPO_HINTS: Record<string, string> = {
   permint: "permit",
   forbit: "forbid",
   prinipal: "principal",
+  prinicpal: "principal",
   prncipal: "principal",
   resorce: "resource",
   resoure: "resource",
@@ -131,6 +141,43 @@ function locationFor(err: DetailedError, source: string): { line: number; column
 }
 
 export async function handleValidate(input: ValidateInput): Promise<ValidateResult> {
+  // Syntax-only mode: no schema supplied. Run the parser alone so the caller
+  // can sanity-check a snippet without having to construct a schema first.
+  // Maps any parse failure to the same ValidateError shape the full-validate
+  // path uses, so downstream consumers do not need a separate branch.
+  if (input.schema === undefined) {
+    const parseAnswer = checkParsePolicySet({ staticPolicies: input.policies });
+    if (parseAnswer.type === "failure") {
+      return {
+        valid: false,
+        errors: parseAnswer.errors.map((e) => {
+          const loc = locationFor(e, input.policies);
+          const hint = typoHint(e.message) ?? e.help ?? null;
+          const base: ValidateError = {
+            policy_id: "",
+            message: e.message,
+            hint,
+          };
+          if (loc) {
+            base.line = loc.line;
+            base.column = loc.column;
+          }
+          return base;
+        }),
+        warnings: [],
+        policy_count: countPolicies(input.policies),
+        validation_mode: "syntax_only",
+      };
+    }
+    return {
+      valid: true,
+      errors: [],
+      warnings: [],
+      policy_count: countPolicies(input.policies),
+      validation_mode: "syntax_only",
+    };
+  }
+
   const schema = parseSchema(input.schema);
 
   // per spike-report-wasm-api.md §2: type field is WASM call health, not policy validity.
@@ -159,6 +206,7 @@ export async function handleValidate(input: ValidateInput): Promise<ValidateResu
       }),
       warnings: [],
       policy_count: countPolicies(input.policies),
+      validation_mode: "syntax_and_schema",
     };
   }
 
@@ -195,5 +243,6 @@ export async function handleValidate(input: ValidateInput): Promise<ValidateResu
     errors,
     warnings,
     policy_count: countPolicies(input.policies),
+    validation_mode: "syntax_and_schema",
   };
 }

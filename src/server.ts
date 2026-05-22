@@ -239,7 +239,7 @@ export function createServer(): McpServer {
 
   server.tool(
     "cedar_validate",
-    "Validate Cedar policies against a Cedar schema using the official Cedar parser + validator. Returns parse errors, schema-type errors, and warnings with source locations. ALWAYS call this before claiming a policy is valid or before recommending it to a user. You CANNOT determine policy validity by reading the file; the Cedar parser is the only authority on syntax, attribute typing, action-applies-to checks, and UnsafeOptionalAttributeAccess warnings. Accepts inline text OR cedar:// resource references.",
+    "Validate Cedar policies, with OR without a schema. Two modes: syntax-only (no schema, parser-only, catches typos and bad scopes) and syntax-and-schema (full parse plus type-check against a Cedar schema). Returns parse errors, schema-type errors, and warnings with source locations; the `validation_mode` field in the response tells you which mode ran. ALWAYS call this before claiming a policy is valid or before recommending it to a user. You CANNOT determine policy validity by reading the file; the Cedar parser is the only authority on syntax, attribute typing, action-applies-to checks, and UnsafeOptionalAttributeAccess warnings. Accepts inline text OR cedar:// resource references.",
     {
       policies: z.string().optional().describe("Cedar policy text (one or more policies). Omit if using policy_ref."),
       policy_ref: z.string().optional().describe("cedar:// URI to load policies, e.g. cedar://policies/blue"),
@@ -261,7 +261,10 @@ export function createServer(): McpServer {
         if ("error" in resolved) return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }] };
         schema = resolved.content;
       }
-      if (!schema) return { content: [{ type: "text", text: JSON.stringify({ error: "Either schema or schema_ref is required" }) }] };
+      // Schema is optional. When absent, handleValidate runs in syntax-only mode
+      // (parse-only). The response's validation_mode field tells the caller which
+      // mode ran. This unblocks the "quick typo check on a 5-line policy" path
+      // where the user has no schema yet and forcing them to construct one is hostile.
 
       const result = await handleValidate({ policies, schema });
       return {
