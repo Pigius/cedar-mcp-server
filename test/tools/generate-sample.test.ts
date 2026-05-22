@@ -382,6 +382,85 @@ describe("cedar_generate_sample_request", () => {
     expect(result.entities.every((e) => !e.uid.type.startsWith("OtherApp::OtherApp::"))).toBe(true);
   });
 
+  it("kickoff-14 14d F2: namespaceless JSON schema (empty-string namespace key) generates bare entity refs", async () => {
+    // Cedar's "no namespace" form is an empty-string key:
+    // `{"": {entityTypes: {...}}}`. The original `if (ns)` guard treated ""
+    // as falsy and silently fell back to `schemaNamespace = "MyApp"`, leaking
+    // a hallucinated namespace into the generated principal / resource /
+    // action references. The fix replaces the truthiness check with
+    // `ns !== undefined` so Cedar's legitimate empty namespace stays empty.
+    const namespacelessSchema = JSON.stringify({
+      "": {
+        entityTypes: {
+          User: { memberOfTypes: [], shape: { type: "Record", attributes: { name: { type: "String", required: true } } } },
+          Document: { memberOfTypes: [], shape: { type: "Record", attributes: {} } },
+        },
+        actions: {
+          read: {
+            appliesTo: {
+              principalTypes: ["User"],
+              resourceTypes: ["Document"],
+              context: { type: "Record", attributes: {} },
+            },
+          },
+        },
+      },
+    });
+    const result = await handleGenerateSample({
+      policy: `permit (principal, action, resource);`,
+      schema: namespacelessSchema,
+      target_decision: "allow",
+    });
+
+    expect(result.error).toBeUndefined();
+    // Bare refs — no namespace prefix at all (not "MyApp::..." and not "::User").
+    expect(result.principal).toBe('User::"sample-principal"');
+    expect(result.resource).toBe('Document::"sample-resource"');
+    expect(result.action).toBe('Action::"read"');
+    expect(result.entities.every((e) => !e.uid.type.includes("::"))).toBe(true);
+    expect(result.ready_to_test).toBe(true);
+  });
+
+  it("kickoff-14 14d F3: ready_to_test is false (and explanation flags the mismatch) when the generator's output doesn't satisfy the user's schema", async () => {
+    // F3 surfaced that the internal isAuthorized verification call did not
+    // include the user's schema, so a payload referencing entity types the
+    // schema doesn't declare still got `ready_to_test: true`. Fix: pass schema
+    // with validateRequest:true. This test pins that the verification now
+    // reflects schema reality by feeding a policy that pins a principal type
+    // the schema does not declare (`Ghost::User`).
+    const schema = JSON.stringify({
+      Real: {
+        entityTypes: {
+          User: { memberOfTypes: [], shape: { type: "Record", attributes: { name: { type: "String", required: true } } } },
+          Document: { memberOfTypes: [], shape: { type: "Record", attributes: {} } },
+        },
+        actions: {
+          read: {
+            appliesTo: { principalTypes: ["User"], resourceTypes: ["Document"], context: { type: "Record", attributes: {} } },
+          },
+        },
+      },
+    });
+    // The policy pins a principal type from a namespace the schema doesn't declare.
+    const policy = `permit (principal == Ghost::User::"alice", action, resource);`;
+    const result = await handleGenerateSample({
+      policy,
+      schema,
+      target_decision: "allow",
+    });
+
+    // The tool returns gracefully (no thrown exception) but signals the mismatch.
+    // Either via `error` (schema-validation failure path) or via
+    // `ready_to_test: false` with explanation. The contract: the response must
+    // NOT claim ready_to_test:true on a payload Cedar would reject under the
+    // user's schema.
+    if (result.ready_to_test === true) {
+      throw new Error(`ready_to_test was incorrectly true. Result: ${JSON.stringify(result, null, 2)}`);
+    }
+    // The verification path catches the schema-mismatched principal type.
+    expect(result.error ?? result.explanation).toMatch(/schema|principal|entity/i);
+  });
+
   it("kickoff-14 14b: JSON-format schema (already bare types) keeps single namespace", async () => {
     // Regression: the JSON schema path supplies bare entity-type names ("User",
     // "Document"), so qualifyEntityType prefixes with the namespace. Existing

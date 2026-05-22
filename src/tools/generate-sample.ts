@@ -200,7 +200,15 @@ function requiredAttrsFromSchema(
 
     const defaults: Record<string, unknown> = {};
     for (const [attrName, attrDef] of Object.entries(attributes)) {
-      if (attrDef["required"] !== true) continue;
+      // Cedar JSON-schema default for `required` is true (per the official
+      // spec); only attributes with an explicit `required: false` are optional.
+      // The old `!== true` check skipped attributes when the JSON omitted the
+      // flag entirely, which is the shape `schemaToJsonWithResolvedTypes`
+      // emits for cedarschema-text input like `entity User { name: String }`.
+      // Empty-attrs entities then failed `validateRequest` once the schema
+      // was supplied to the internal verification call (kickoff-14 14d audit
+      // Finding F3 follow-on).
+      if (attrDef["required"] === false) continue;
       const typeName = (attrDef["type"] as string | undefined)?.toLowerCase() ?? "";
       if (typeName === "string") defaults[attrName] = "";
       else if (typeName === "long") defaults[attrName] = 0;
@@ -247,7 +255,9 @@ function entityTypesFromSchema(
 }
 
 function extractScope(json: PolicyJson, schemaNamespace: string, schemaJson?: unknown): ScopeInfo {
-  const actionType = `${schemaNamespace}::Action`;
+  // qualifyEntityType handles the empty-namespace case (Cedar's "" namespace
+  // for namespaceless schemas) by returning bare "Action" instead of "::Action".
+  const actionType = qualifyEntityType("Action", schemaNamespace);
 
   let actionId: string | undefined;
   let principalRoleType: string | undefined;
@@ -528,19 +538,27 @@ export async function handleGenerateSample(input: GenerateSampleInput): Promise<
 
   // Extract namespace and schema JSON for entity type lookup.
   // schemaToJsonWithResolvedTypes only accepts Cedar text — for JSON schemas, parse directly.
+  //
+  // Cedar's "namespaceless" schema uses an empty-string namespace key:
+  // `{"": {entityTypes: {...}}}`. Object.keys returns `[""]`, and treating
+  // that as truthy via `if (ns)` previously fell through to the hardcoded
+  // "MyApp" default, hallucinating a namespace the schema didn't declare.
+  // `if (ns !== undefined)` keeps the empty string as a legitimate namespace
+  // that downstream `qualifyEntityType` rewrites as no prefix at all
+  // (kickoff-14 14d audit Finding F2).
   let schemaNamespace = "MyApp";
   let schemaJson: unknown = undefined;
   try {
     const parsed = JSON.parse(input.schema);
     const ns = Object.keys(parsed)[0];
-    if (ns) { schemaNamespace = ns; schemaJson = parsed; }
+    if (ns !== undefined) { schemaNamespace = ns; schemaJson = parsed; }
   } catch {
     // Not JSON — try Cedar text schema
     try {
       const schemaResult = schemaToJsonWithResolvedTypes(input.schema);
       if (schemaResult.type === "success") {
         const ns = Object.keys(schemaResult.json)[0];
-        if (ns) { schemaNamespace = ns; schemaJson = schemaResult.json; }
+        if (ns !== undefined) { schemaNamespace = ns; schemaJson = schemaResult.json; }
       }
     } catch {
       // Non-fatal — proceed with default namespace
@@ -562,7 +580,18 @@ export async function handleGenerateSample(input: GenerateSampleInput): Promise<
   const actionRef = `${scope.actionType}::"${actionId}"`;
   const resourceRef = `${scope.resourceType}::"${resourceId}"`;
 
-  // Validate the generated payload with isAuthorized
+  // Validate the generated payload with isAuthorized. Pass the user's schema
+  // with `validateRequest: true` so a generator-fabricated entity type that
+  // doesn't exist in the schema (e.g. when the schema has no namespace and
+  // an earlier code path leaked a default like `MyApp::Resource`) flips
+  // `ready_to_test` to false instead of falsely claiming the payload is
+  // ready (kickoff-14 14d audit Finding F3).
+  let verifySchema: Schema | undefined;
+  try {
+    verifySchema = JSON.parse(input.schema) as Schema;
+  } catch {
+    verifySchema = input.schema as Schema;
+  }
   const authResult = isAuthorized({
     principal: { type: scope.principalType, id: principalId },
     action: { type: scope.actionType, id: actionId },
@@ -570,6 +599,8 @@ export async function handleGenerateSample(input: GenerateSampleInput): Promise<
     context: {},
     policies: { staticPolicies: input.policy },
     entities: entities as Entities,
+    schema: verifySchema,
+    validateRequest: true,
   });
 
   if (authResult.type === "failure") {
@@ -606,6 +637,8 @@ export async function handleGenerateSample(input: GenerateSampleInput): Promise<
       context: {},
       policies: { staticPolicies: input.policy },
       entities: retryEntities as Entities,
+      schema: verifySchema,
+      validateRequest: true,
     });
     if (retryResult.type === "success") {
       const retryDecision = retryResult.response.decision === "allow" ? "Allow" : "Deny";

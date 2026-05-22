@@ -727,12 +727,12 @@ The assistant translates this to a cedar_generate_sample_request call with the p
   "entities": [
     {
       "uid": { "type": "MyApp::User", "id": "sample-principal" },
-      "attrs": {},
+      "attrs": { "email": "", "name": "" },
       "parents": [{ "type": "MyApp::Role", "id": "admin" }]
     },
     {
       "uid": { "type": "MyApp::Document", "id": "sample-resource" },
-      "attrs": {},
+      "attrs": { "classification": "", "owner": "" },
       "parents": []
     },
     {
@@ -747,7 +747,7 @@ The assistant translates this to a cedar_generate_sample_request call with the p
 }
 ```
 
-The generator verifies the payload internally before returning: `ready_to_test: true` means a follow-up `cedar_authorize` call with these exact inputs will reproduce the documented `decision`.
+The generator pre-fills required attributes from the schema (`name`, `email` on User; `classification`, `owner` on Document) with neutral defaults so `validateRequest: true` accepts the payload. The verification step runs the generated request through `cedar_authorize` with the same schema; `ready_to_test: true` means a follow-up call with these exact inputs reproduces the documented `decision`. If the verification fails (most commonly when the policy pins an entity type the schema does not declare), the response carries `ready_to_test: false` and a non-null `error` instead.
 
 **When to use:** generating test payloads without hand-crafting entities, or verifying that a policy produces the decisions you expect before deploying it. Pass the output directly to `cedar_authorize` to verify.
 
