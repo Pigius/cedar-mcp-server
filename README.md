@@ -14,14 +14,14 @@
 
 Seventeen tools across six categories, plus three MCP prompts.
 
-**Authorization** — make decisions: single requests or batches.
+#### Authorization
 
 | Tool | What it does |
 |------|-------------|
 | [`cedar_authorize`](#cedar_authorize) | Evaluates one authorization request locally; returns the decision and which policies fired |
 | [`cedar_authorize_batch`](#cedar_authorize_batch) | Runs N authorization requests through one policy set and returns the decision matrix; for regression testing after a policy edit |
 
-**Validation** — confirm policies, schemas, templates, and entities are well-formed.
+#### Validation
 
 | Tool | What it does |
 |------|-------------|
@@ -30,14 +30,14 @@ Seventeen tools across six categories, plus three MCP prompts.
 | [`cedar_validate_template`](#cedar_validate_template) | Validates a Cedar template against a schema; detects slot placeholders |
 | [`cedar_validate_entities`](#cedar_validate_entities) | Validates a Cedar entities JSON array against a schema; classifies errors by kind (unknown_type, missing_required_attribute, type_mismatch, unknown_attribute, disallowed_parent_type) |
 
-**Formatting and translation** — transform policy/schema text without changing semantics.
+#### Formatting and translation
 
 | Tool | What it does |
 |------|-------------|
 | [`cedar_format`](#cedar_format) | Formats Cedar policy text to canonical style |
 | [`cedar_translate`](#cedar_translate) | Translates between Cedar text and Cedar JSON formats for policies and schemas |
 
-**Planning and analysis** — reason about policy design, changes, and intent.
+#### Planning and analysis
 
 | Tool | What it does |
 |------|-------------|
@@ -46,7 +46,9 @@ Seventeen tools across six categories, plus three MCP prompts.
 | [`cedar_generate_sample_request`](#cedar_generate_sample_request) | Generates a complete authorization request payload that produces a target decision |
 | [`cedar_advise`](#cedar_advise) | Returns a structured context bundle (schema summary, policy inventory with pattern classification, gotchas, AVP rules, sequencing guidance) for any policy-change intent so the calling assistant can plan correctly |
 
-**Templates** — instantiate and inspect template-linked policies (template validation lives in **Validation**).
+#### Templates
+
+Instantiate and inspect template-linked policies. Template validation lives in the Validation category above.
 
 | Tool | What it does |
 |------|-------------|
@@ -54,7 +56,7 @@ Seventeen tools across six categories, plus three MCP prompts.
 | [`cedar_list_templates`](#cedar_list_templates) | Lists all templates in a policy store (reads from `templates/` subdirectory) |
 | [`cedar_list_template_links`](#cedar_list_template_links) | Lists all template-linked policy instances in a store (reads from `template-links/` subdirectory) |
 
-**Diffing** — compare two schemas or two policy stores before promoting changes.
+#### Diffing
 
 | Tool | What it does |
 |------|-------------|
@@ -190,7 +192,7 @@ You: I need to add a "contractor" role that can read documents
 
 AI:  [calls cedar_advise]
 
-     Step 1: Schema — no changes needed; "classification" attribute already exists.
+     Step 1: Schema (no changes needed; "classification" attribute already exists).
      Step 2: Policy (new_policy_via_create_policy):
        permit (
          principal in DocMgmt::Role::"contractor",
@@ -199,7 +201,7 @@ AI:  [calls cedar_advise]
        )
        when { resource.classification == "external_share" };
      Gotcha (high): accessing resource.classification without a guard works here
-     because the attribute is required in the schema — but if you make it optional
+     because the attribute is required in the schema. If you make it optional
      later, add `resource has classification &&` before the check.
 ```
 
@@ -212,8 +214,8 @@ You: Compare staging and production policies before I promote.
 
 AI:  [calls cedar_diff_policy_stores with blue: "production", green: "staging"]
 
-     Added: contractor-read-external.cedar (new_policy_via_create_policy — safe to add)
-     Modified: editor-policy.cedar (principal clause changed — requires_delete_recreate)
+     Added: contractor-read-external.cedar (new_policy_via_create_policy, safe to add)
+     Modified: editor-policy.cedar (principal clause changed, requires_delete_recreate)
      Schema: unchanged
 
      Behavioral diff (optional): pass a list of authorization requests to see
@@ -224,9 +226,9 @@ AI:  [calls cedar_diff_policy_stores with blue: "production", green: "staging"]
 
 The server doesn't call AVP APIs directly. Apply your changes through your own deployment pipeline. The `avp_update_mode` classification from steps 1 and 2 tells you exactly which AVP operations each change requires:
 
-- `new_policy_via_create_policy` — safe to add with `CreatePolicy`
-- `in_place_via_update_policy` — change action or conditions with `UpdatePolicy`
-- `requires_delete_recreate` — principal, resource, or effect changed; use `DeletePolicy` then `CreatePolicy`
+- `new_policy_via_create_policy`: safe to add with `CreatePolicy`.
+- `in_place_via_update_policy`: change action or conditions with `UpdatePolicy`.
+- `requires_delete_recreate`: principal, resource, or effect changed; use `DeletePolicy` then `CreatePolicy`.
 
 See [`avp-cli`](https://github.com/Pigius/avp-cli) for a companion CLI that handles the pull/push side.
 
@@ -262,23 +264,15 @@ The response's `validation_mode` field tells you which mode ran.
 - `"syntax_only"`: parser-only. Skips workspace auto-discovery entirely and ignores any inline schema, `schema_ref`, or `store` you pass alongside it (the user said parser-only; the tool honors that literally). Use when the user explicitly says they have no schema, or for a fast parse-only sanity check inside a Cedar-workspace cwd.
 - `"syntax_and_schema"`: require a schema. If neither an inline schema nor a workspace schema is resolvable, the response is an error rather than a silent drop to syntax-only. Use when you want to be sure the type-check ran.
 
-```json
-// request: { "policies": "permit (principal in DocMgmt::Role::\"admin\", action, resource);" }
-// (cedar-sandbox is the only loaded MCP root)
-{
-  "valid": true,
-  "errors": [],
-  "warnings": [],
-  "policy_count": 1,
-  "validation_mode": "syntax_and_schema",
-  "auto_discovered": { "schema_from": "cedar-sandbox" }
-}
+**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+
+```
+Use cedar_validate on: permit (prinicpal in MyApp::Role::"admin", action, resource);
 ```
 
-**Syntax-only check (no schema needed):**
+**Response** (captured 2026-05-22 against `cedar-sandbox`):
 
 ```json
-// request: { "policies": "permit (prinicpal in MyApp::Role::\"admin\", action, resource);" }
 {
   "valid": false,
   "errors": [
@@ -292,31 +286,23 @@ The response's `validation_mode` field tells you which mode ran.
   ],
   "warnings": [],
   "policy_count": 0,
-  "validation_mode": "syntax_only"
+  "validation_mode": "syntax_and_schema",
+  "auto_discovered": { "schema_from": "cedar-sandbox" }
 }
 ```
 
-**Valid policy (with schema):**
+The typo `prinicpal` lands on the schema-aware path because the cwd-fallback auto-discovered the sandbox schema, so `validation_mode` is `syntax_and_schema`. With no workspace store loaded (or `validation_mode: "syntax_only"` set explicitly), the same prompt produces the same parse error but `validation_mode: "syntax_only"` and no `auto_discovered` field.
+
+Additional shapes you'll see:
 
 ```json
-{
-  "valid": true,
-  "errors": [],
-  "warnings": [],
-  "policy_count": 1,
-  "validation_mode": "syntax_and_schema"
-}
-```
-
-**Invalid policy, attribute not found in schema:**
-
-```json
+// Schema-validation error: attribute not declared on the entity type
 {
   "valid": false,
   "errors": [
     {
       "policy_id": "policy0",
-      "message": "attribute `nonexistent` on entity type `DocMgmt::Document` not found",
+      "message": "attribute `nonexistent` on entity type `MyApp::Document` not found",
       "hint": "did you mean `classification`?",
       "line": 1,
       "column": 47
@@ -327,9 +313,8 @@ The response's `validation_mode` field tells you which mode ran.
 }
 ```
 
-**Parse error with a typo hint:**
-
 ```json
+// Parse error on a multi-line policy with `int` instead of `in` on line 3
 {
   "valid": false,
   "errors": [
@@ -374,14 +359,24 @@ Evaluates an authorization request locally against your policies and entities. R
 
 **Workspace auto-discovery.** When any of `policies` / `schema` / `entities` (and their `_ref` siblings) are omitted and exactly one MCP root is loaded, the tool reads each missing input from that store: `policies/*.cedar` files (per-policy basenames preserved as determining-policy IDs), `schema.cedarschema` or `schema.json`, and the entities under `entities/*.json` merged into one array. The response's `auto_discovered` field reports which store satisfied each missing input. With multiple stores loaded, the response is an actionable error listing the candidate names. Pass `store: "<name>"` to choose one.
 
+**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+
+```
+Can alice read doc-public?
+```
+
+The assistant translates this to a cedar_authorize call with `principal: MyApp::User::"alice"`, `action: MyApp::Action::"read"`, `resource: MyApp::Document::"doc-public"`. Policies, schema, and entities all auto-discover from the sandbox.
+
+**Response** (captured 2026-05-22 against `cedar-sandbox`):
+
 ```json
-// request: { "principal": "DocMgmt::User::\"alice\"", "action": "DocMgmt::Action::\"READ\"", "resource": "DocMgmt::Document::\"doc-public\"" }
-// (cedar-sandbox is the only loaded MCP root)
 {
   "decision": "Allow",
   "determining_policies": ["admin"],
   "errors": [],
   "decision_reason": "permit_policy_fired",
+  "format_detected": "cedar",
+  "format_note": "Input is in Cedar/WASM format.",
   "auto_discovered": {
     "policies_from": "cedar-sandbox",
     "schema_from": "cedar-sandbox",
@@ -390,25 +385,27 @@ Evaluates an authorization request locally against your policies and entities. R
 }
 ```
 
-**Allow:**
+`determining_policies: ["admin"]` is the file basename (`policies/admin.cedar` → `admin`), not a positional placeholder, because cedar_authorize uses the H1 stable-ID resolution ladder described below.
+
+Additional shapes:
 
 ```json
-{
-  "decision": "Allow",
-  "determining_policies": ["admin-read"],
-  "errors": [],
-  "decision_reason": "permit_policy_fired"
-}
-```
-
-**Deny (no policy matched):**
-
-```json
+// Deny via default-deny (no policy matched)
 {
   "decision": "Deny",
   "determining_policies": [],
   "errors": [],
   "decision_reason": "default_deny_no_permit_matched"
+}
+```
+
+```json
+// Deny via a forbid policy
+{
+  "decision": "Deny",
+  "determining_policies": ["editor_readonly"],
+  "errors": [],
+  "decision_reason": "forbid_policy_fired"
 }
 ```
 
@@ -439,30 +436,57 @@ Runs N authorization requests through ONE policy set and returns the decision ma
 | `schema_ref` | no | `cedar://` URI to load schema |
 | `requests` | yes | JSON array of authorization request objects: `{principal, action, resource, entities, context?}` |
 | `entities` | no | Shared entities JSON applied when individual requests omit their own `entities` field |
+| `entities_ref` | no | `cedar://` URI to load shared entities |
 
-**Output shape:**
+**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+
+```
+Run a batch of three authorizations against the sandbox: alice/read/doc-public, bob/write/doc-public, charlie/delete/doc-public.
+```
+
+The assistant translates this to a cedar_authorize_batch call referencing `cedar://policies/cedar-sandbox`, `cedar://schema/cedar-sandbox`, and `cedar://entities/cedar-sandbox`, with the three requests inline.
+
+**Response** (captured 2026-05-22 against `cedar-sandbox`):
 
 ```json
 {
-  "total": 200,
-  "allowed": 162,
-  "denied": 35,
-  "errored": 3,
+  "total": 3,
+  "allowed": 2,
+  "denied": 1,
+  "errored": 0,
   "decisions": [
     {
       "index": 0,
-      "principal": "DocMgmt::User::\"alice\"",
-      "action": "DocMgmt::Action::\"READ\"",
-      "resource": "DocMgmt::Document::\"doc-1\"",
+      "principal": "MyApp::User::\"alice\"",
+      "action": "MyApp::Action::\"read\"",
+      "resource": "MyApp::Document::\"doc-public\"",
       "decision": "Allow",
       "determining_policies": ["policy0"]
+    },
+    {
+      "index": 1,
+      "principal": "MyApp::User::\"bob\"",
+      "action": "MyApp::Action::\"write\"",
+      "resource": "MyApp::Document::\"doc-public\"",
+      "decision": "Allow",
+      "determining_policies": ["policy1"]
+    },
+    {
+      "index": 2,
+      "principal": "MyApp::User::\"charlie\"",
+      "action": "MyApp::Action::\"delete\"",
+      "resource": "MyApp::Document::\"doc-public\"",
+      "decision": "Deny",
+      "determining_policies": []
     }
   ],
-  "summary": "200 requests: 162 Allow, 35 Deny, 3 Error"
+  "summary": "3 requests: 2 Allow, 1 Deny, 0 Error"
 }
 ```
 
 Per-request errors carry an `error` field describing what went wrong (malformed entities, schema violation, etc.) without aborting the rest of the batch.
+
+Note: `cedar_authorize_batch` currently emits positional `policy0` / `policy1` IDs in `determining_policies` rather than the file basenames (`admin` / `editor`) that single-request `cedar_authorize` returns. The H1 stable-ID resolution from kickoff-09 9d was applied to `cedar_authorize` but not its batch sibling. Tracked for v1.1.
 
 **When to use:** regression testing a canonical request suite after any policy edit. Pair with `cedar_diff_policy_stores`'s `behavioral_test_requests` when you also want a side-by-side comparison against the previous policy set.
 
@@ -480,19 +504,22 @@ Formats Cedar policy text to canonical style. Useful before committing policy fi
 | `line_width` | no | Maximum line width (default: 80) |
 | `indent_width` | no | Indent width in spaces (default: 2) |
 
-**Example:**
+**Example prompt** (paste into Claude Code):
 
-Input: `permit(principal in DocMgmt::Role::"admin",action,resource);`
-
-Output:
-
-```cedar
-permit (
-  principal in DocMgmt::Role::"admin",
-  action,
-  resource
-);
 ```
+Format this Cedar: permit(principal in MyApp::Role::"admin",action,resource);
+```
+
+**Response** (captured 2026-05-22):
+
+```json
+{
+  "formatted": "permit (\n  principal in MyApp::Role::\"admin\",\n  action,\n  resource\n);\n",
+  "error": null
+}
+```
+
+The `formatted` field is the canonical-style Cedar text. The same input applied to the formatter is idempotent (already-canonical text returns unchanged).
 
 **When to use:** before committing policy files. Canonical formatting makes diffs readable and policy reviews easier.
 
@@ -510,30 +537,22 @@ Translates between Cedar text and JSON formats for policies and schemas.
 | `type` | yes | `"policy"` or `"schema"` |
 | `direction` | yes | `"to_json"` or `"to_cedar"` |
 
-**Policy to JSON:**
+**Example prompt** (paste into Claude Code):
 
-Input Cedar:
-```cedar
-permit (
-  principal in DocMgmt::Role::"admin",
-  action,
-  resource
-);
+```
+Translate to JSON: permit (principal, action, resource);
 ```
 
-Output JSON:
+**Response** (captured 2026-05-22):
+
 ```json
 {
-  "effect": "permit",
-  "principal": {
-    "op": "in",
-    "entity": { "type": "DocMgmt::Role", "id": "admin" }
-  },
-  "action": { "op": "All" },
-  "resource": { "op": "All" },
-  "conditions": []
+  "output": "{\n  \"effect\": \"permit\",\n  \"principal\": {\n    \"op\": \"All\"\n  },\n  \"action\": {\n    \"op\": \"All\"\n  },\n  \"resource\": {\n    \"op\": \"All\"\n  },\n  \"conditions\": []\n}",
+  "error": null
 }
 ```
+
+The `output` field is the Cedar JSON-AST representation of the policy. Round-trip back via `direction: "to_cedar"` to recover the source.
 
 **When to use:** programmatic policy inspection, generating policies from code, or feeding policy structure into tools that work with JSON.
 
@@ -554,33 +573,43 @@ Explains a Cedar policy in plain English with pattern detection.
 
 **Workspace auto-discovery.** When `schema` and `schema_ref` are both omitted and exactly one MCP root is loaded, the tool reads the schema from that store. The response's `auto_discovered.schema_from` field names the source store. The schema is optional for explain, so a single store with no schema file still produces a result. With multiple stores loaded and no `store` parameter, the response is an actionable error listing the candidate names.
 
+**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+
+```
+Explain this policy: permit (principal in MyApp::Role::"admin", action, resource);
+```
+
+**Response** (captured 2026-05-22 against `cedar-sandbox`):
+
 ```json
-// request: { "policy": "permit (principal in DocMgmt::Role::\"admin\", action, resource);" }
-// (cedar-sandbox is the only loaded MCP root)
 {
   "effect": "permit",
-  "summary": "PERMITS any principal in role admin to perform any action on any resource.",
-  "patterns_detected": ["role_based_access", "unrestricted_action", "unrestricted_resource"],
-  "auto_discovered": { "schema_from": "cedar-sandbox" }
-}
-```
-
-**Output shape:**
-
-```json
-{
-  "effect": "forbid",
-  "principal": { "scope": "All", "description": "any principal" },
-  "action": { "scope": "All", "description": "any action" },
-  "resource": { "scope": "All", "description": "any resource" },
-  "conditions": [
-    { "kind": "when", "text": "WHEN resource.classification equals \"top_secret\"" },
-    { "kind": "unless", "text": "UNLESS principal is in role admin" }
+  "principal": {
+    "scope": "in",
+    "description": "principal in MyApp::Role::\"admin\""
+  },
+  "action": {
+    "scope": "All",
+    "description": "any action"
+  },
+  "resource": {
+    "scope": "All",
+    "description": "any resource"
+  },
+  "conditions": [],
+  "summary": "PERMITS principal in MyApp::Role::\"admin\" to perform any action on any resource.",
+  "patterns_detected": [
+    "role_based_access",
+    "unrestricted_action",
+    "unrestricted_resource"
   ],
-  "summary": "FORBIDS any principal from any action on any resource WHEN resource.classification equals \"top_secret\" UNLESS principal is in role admin.",
-  "patterns_detected": ["forbid_policy", "attribute_condition", "role_exemption"]
+  "auto_discovered": {
+    "schema_from": "cedar-sandbox"
+  }
 }
 ```
+
+The `patterns_detected` array names recognizable shapes the tool spotted in the AST: `role_based_access` for membership in a Role, `unrestricted_action` / `unrestricted_resource` for `All`-scope clauses, `attribute_condition` when `when`/`unless` reads attributes, `forbid_policy` for forbid effects, etc.
 
 **When to use:** onboarding teammates onto an existing policy set, auditing policies you didn't write, or explaining the intent behind a complex `when`/`unless` combination.
 
@@ -597,16 +626,41 @@ Determines whether a policy modification can be applied in-place in Amazon Verif
 | `old_policy` | yes | Existing Cedar policy text |
 | `new_policy` | yes | Updated Cedar policy text |
 
-**Output shape:**
+**Example prompt** (paste into Claude Code):
+
+```
+Check this change: editor.cedar narrows from `action in [read, write]` to `action == read`.
+```
+
+The assistant translates this to a cedar_check_policy_change call with `old_policy` = the read+write permit, `new_policy` = the read-only permit (both in the MyApp namespace).
+
+**Response** (captured 2026-05-22):
 
 ```json
+{
+  "can_update_in_place": true,
+  "changes": [
+    {
+      "field": "action",
+      "old_value": "{\"op\":\"in\",\"entities\":[{\"type\":\"MyApp::Action\",\"id\":\"read\"},{\"type\":\"MyApp::Action\",\"id\":\"write\"}]}",
+      "new_value": "{\"op\":\"==\",\"entity\":{\"type\":\"MyApp::Action\",\"id\":\"read\"}}",
+      "in_place_allowed": true,
+      "reason": "Action clause changes can be applied in-place."
+    }
+  ],
+  "recommendation": "All changes can be applied as an in-place policy update."
+}
+```
+
+An example where the diff requires delete-and-recreate instead:
+
+```json
+// old_policy changed the principal head clause (e.g. viewer → senior_viewer)
 {
   "can_update_in_place": false,
   "changes": [
     {
       "field": "principal",
-      "old_value": "in DocMgmt::Role::\"viewer\"",
-      "new_value": "in DocMgmt::Role::\"senior_viewer\"",
       "in_place_allowed": false,
       "reason": "Changing the principal clause requires deleting and recreating the policy."
     }
@@ -619,9 +673,9 @@ Determines whether a policy modification can be applied in-place in Amazon Verif
 
 | Field | In-place via UpdatePolicy? |
 |-------|--------------------------|
-| `effect` | No — delete and recreate |
-| `principal` | No — delete and recreate |
-| `resource` | No — delete and recreate |
+| `effect` | No (delete and recreate) |
+| `principal` | No (delete and recreate) |
+| `resource` | No (delete and recreate) |
 | `action` | Yes |
 | `conditions` (when/unless) | Yes |
 
@@ -641,19 +695,45 @@ Generates a complete authorization request payload that produces a target decisi
 | `schema` | yes | Cedar schema for the namespace |
 | `target_decision` | yes | `"allow"` or `"deny"` |
 
-**Output shape:**
+**Example prompt** (paste into Claude Code):
+
+```
+Generate a sample request that would be allowed by: permit (principal in MyApp::Role::"admin", action, resource);
+```
+
+The assistant translates this to a cedar_generate_sample_request call with the policy text and the cedar-sandbox schema.
+
+**Response** (captured 2026-05-22 against `cedar-sandbox`):
 
 ```json
 {
-  "principal": "DocMgmt::User::\"generated-user\"",
-  "action": "DocMgmt::Action::\"read\"",
-  "resource": "DocMgmt::Document::\"generated-doc\"",
-  "entities": [...],
-  "explanation": "Principal is in DocMgmt::Role::\"admin\" via parents — matches the permit condition.",
+  "principal": "MyApp::MyApp::User::\"sample-principal\"",
+  "action": "MyApp::Action::\"delete\"",
+  "resource": "MyApp::MyApp::Document::\"sample-resource\"",
+  "entities": [
+    {
+      "uid": { "type": "MyApp::MyApp::User", "id": "sample-principal" },
+      "attrs": {},
+      "parents": [{ "type": "MyApp::Role", "id": "admin" }]
+    },
+    {
+      "uid": { "type": "MyApp::MyApp::Document", "id": "sample-resource" },
+      "attrs": {},
+      "parents": []
+    },
+    {
+      "uid": { "type": "MyApp::Role", "id": "admin" },
+      "attrs": {},
+      "parents": []
+    }
+  ],
+  "explanation": "This request will be ALLOW as expected.",
   "decision": "Allow",
   "ready_to_test": true
 }
 ```
+
+Note the `MyApp::MyApp::User` double-namespace in the generated principal and resource. That's a known artifact of how the tool constructs entity references when the schema is supplied in `.cedarschema` form, and the response is faithful to what currently ships. Tracked for v1.1 cleanup. The Cedar engine still accepts the payload (`ready_to_test: true` is verified by running the request through `cedar_authorize` internally), so the sample is functional even with the awkward double prefix.
 
 **When to use:** generating test payloads without hand-crafting entities, or verifying that a policy produces the decisions you expect before deploying it. Pass the output directly to `cedar_authorize` to verify.
 
@@ -674,22 +754,31 @@ This pivot replaced the original sampling-based `cedar_advise` after dogfooding 
 | `intent` | yes | Natural-language description of the desired authorization behavior, kept verbatim from the user |
 | `store_ref` | no | Store name or `cedar://` URI (e.g. `cedar://policies/production` or `production`); when supplied, the bundle includes `schema_summary`, `policy_inventory` with full policy text, and `patterns_detected_in_store` counts grounded in the actual store. Omit when exactly one store is loaded and the bundle will auto-resolve to it (the response's `auto_discovered.store_from` field reports `"single_loaded_store"`). With multiple stores loaded and no `store_ref`, the response sets `store_status: "ambiguous"` and lists the candidate names under `available_stores`. |
 
-**Output shape (abridged):**
+**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+
+```
+I want to make editors read-only, admins exempt. Plan it.
+```
+
+The assistant translates this to a cedar_advise call with `intent: "Make editors read-only, admins exempt."` and no `store_ref` (cedar-sandbox is the only loaded store, so it auto-resolves).
+
+**Response (abridged)** (captured 2026-05-22 against `cedar-sandbox`):
 
 ```json
 {
   "tool": "cedar_advise",
   "bundle_version": "v2",
-  "intent": "Only users with verified email should read documents; editors and viewers affected, admins exempt",
-  "store_name": "production",
+  "intent": "Make editors read-only, admins exempt.",
+  "store_name": "cedar-sandbox",
   "store_status": "loaded",
+  "auto_discovered": { "store_from": "single_loaded_store" },
   "schema_summary": {
     "valid": true,
     "format": "cedarschema",
-    "namespaces": ["DocMgmt"],
+    "namespaces": ["MyApp"],
     "entity_type_count": 4,
     "action_count": 3,
-    "raw_text": "namespace DocMgmt { ... }"
+    "raw_text": "namespace MyApp { ... }"
   },
   "policy_inventory": [
     {
@@ -697,8 +786,10 @@ This pivot replaced the original sampling-based `cedar_advise` after dogfooding 
       "pattern": "membership",
       "pattern_confidence": "high",
       "summary": "admin (permit, principal scope uses 'in' — group/role membership (RBAC))",
-      "policy_text": "permit(principal in DocMgmt::Role::\"admin\", action, resource);"
-    }
+      "policy_text": "permit (principal in MyApp::Role::\"admin\", action, resource);"
+    },
+    { "policy_id": "editor", "pattern": "membership", "...": "..." },
+    { "policy_id": "viewer", "pattern": "membership", "...": "..." }
   ],
   "patterns_detected_in_store": [{ "pattern": "membership", "count": 3 }],
   "applicable_gotchas": [
@@ -732,29 +823,13 @@ This pivot replaced the original sampling-based `cedar_advise` after dogfooding 
 }
 ```
 
-**Auto-resolve response shape (single store loaded, no `store_ref` passed):**
+The main example above shows the **auto-resolve** path (one store loaded, no `store_ref` passed). When multiple stores are loaded and no `store_ref` is passed, the response shape is **ambiguous** instead:
 
 ```json
 {
   "tool": "cedar_advise",
   "bundle_version": "v2",
-  "intent": "Make editors read-only, admins exempt",
-  "store_name": "cedar-sandbox",
-  "store_status": "loaded",
-  "auto_discovered": { "store_from": "single_loaded_store" },
-  "schema_summary": { "valid": true, "format": "cedarschema", "namespaces": ["DocMgmt"], "...": "..." },
-  "policy_inventory": [ { "policy_id": "admin", "pattern": "membership", "...": "..." } ],
-  "...": "rest of the bundle"
-}
-```
-
-**Ambiguous response shape (multiple stores loaded, no `store_ref` passed):**
-
-```json
-{
-  "tool": "cedar_advise",
-  "bundle_version": "v2",
-  "intent": "Make editors read-only, admins exempt",
+  "intent": "Make editors read-only, admins exempt.",
   "store_status": "ambiguous",
   "available_stores": ["blue", "green"],
   "policy_inventory": [],
@@ -782,7 +857,16 @@ Validates a Cedar template policy against a schema. Templates use slot placehold
 | `template` | yes | Cedar template text, e.g. `permit(principal == ?principal, action == ..., resource == ?resource);` |
 | `schema` | yes | Cedar schema (JSON or `.cedarschema` format) |
 
-**Output shape:**
+**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+
+```
+Validate this Cedar template against the sandbox schema:
+permit (principal == ?principal, action == MyApp::Action::"read", resource == ?resource);
+```
+
+The assistant translates this to a cedar_validate_template call with the template text and the inline schema from `cedar-sandbox/schema.cedarschema`.
+
+**Response** (captured 2026-05-22 against `cedar-sandbox`):
 
 ```json
 {
@@ -810,23 +894,30 @@ Instantiates a Cedar template by binding its `?principal` and/or `?resource` slo
 | `resource` | no | Entity reference for the `?resource` slot, e.g. `App::Document::"doc-42"` |
 | `schema` | no | Cedar schema; if provided, the linked policy is validated against it |
 
-**Output shape:**
+**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+
+```
+Link this template with alice + doc-public, validated against the sandbox schema:
+permit (principal == ?principal, action == MyApp::Action::"read", resource == ?resource);
+```
+
+**Response** (captured 2026-05-22 against `cedar-sandbox`):
 
 ```json
 {
-  "linked_policy": "permit(principal == App::User::\"alice\", action == App::Action::\"read\", resource == App::Document::\"doc-42\");",
+  "linked_policy": "permit(principal == MyApp::User::\"alice\", action == MyApp::Action::\"read\", resource == MyApp::Document::\"doc-public\");",
   "slots_bound": {
-    "?principal": "App::User::\"alice\"",
-    "?resource": "App::Document::\"doc-42\""
+    "?principal": "MyApp::User::\"alice\"",
+    "?resource": "MyApp::Document::\"doc-public\""
   },
   "valid": true,
   "errors": []
 }
 ```
 
-**Note:** entity reference format is `Namespace::Type::"id"` — same as `cedar_authorize` principal/resource parameters.
+Entity reference format is `Namespace::Type::"id"`, same as `cedar_authorize`'s principal / resource parameters.
 
-**When to use:** instantiating a template to inspect the resulting policy or to validate it before deployment. For AVP, you'd upload the template once via `CreatePolicyTemplate` and create instances via `CreatePolicy` (template-linked variant) — `cedar_link_template` helps you reason about what those instances will look like before you make the API call.
+**When to use:** instantiating a template to inspect the resulting policy or to validate it before deployment. For AVP, you upload the template once via `CreatePolicyTemplate` and create instances via `CreatePolicy` (template-linked variant); `cedar_link_template` helps you reason about what those instances will look like before you make the API call.
 
 ---
 
@@ -854,20 +945,22 @@ my-store/
 |-----------|----------|-------------|
 | `store` | yes | Store name (must be a configured MCP root) |
 
-**Output shape:**
+**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+
+```
+List templates in the cedar-sandbox store.
+```
+
+**Response** (captured 2026-05-22 against `cedar-sandbox`):
 
 ```json
 {
-  "store": "production",
-  "templates": [
-    {
-      "id": "viewer-access",
-      "content": "permit(principal == ?principal, ...);",
-      "slots": ["?principal", "?resource"]
-    }
-  ]
+  "store": "cedar-sandbox",
+  "templates": []
 }
 ```
+
+The sandbox has no `templates/` subdirectory, so the array is empty. With templates present in a store, each entry includes `id` (filename basename without `.cedar`), `content` (the template text), and `slots` (the `?principal` / `?resource` placeholders detected by parsing the template).
 
 **When to use:** discovering what templates exist in a store before instantiating or diffing them.
 
@@ -895,23 +988,22 @@ Lists all template-linked policy instances in a store. Links live in a `template
 |-----------|----------|-------------|
 | `store` | yes | Store name (must be a configured MCP root) |
 
-**Output shape:**
+**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+
+```
+List template links in the cedar-sandbox store.
+```
+
+**Response** (captured 2026-05-22 against `cedar-sandbox`):
 
 ```json
 {
-  "store": "production",
-  "links": [
-    {
-      "id": "alice-docs",
-      "template_id": "viewer-access",
-      "slot_values": {
-        "?principal": "App::User::\"alice\"",
-        "?resource": "App::Document::\"doc-42\""
-      }
-    }
-  ]
+  "store": "cedar-sandbox",
+  "links": []
 }
 ```
+
+The sandbox has no `template-links/` subdirectory, so the array is empty. With links present, each entry includes `id` (filename basename without `.json`), `template_id`, and `slot_values`.
 
 **When to use:** auditing which principal-resource pairs are covered by template-linked policies in a store, or diffing link coverage before a deployment.
 
@@ -931,22 +1023,23 @@ Structural and optional behavioral diff between two policy stores. Requires MCP 
 
 **Output shape:**
 
+**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+
+```
+Diff the cedar-sandbox store against itself (smoke test the tool shape).
+```
+
+The assistant translates this to a cedar_diff_policy_stores call with `blue: "cedar-sandbox"`, `green: "cedar-sandbox"`. A real promotion run would compare distinct stores (e.g. `blue: "production"`, `green: "staging"`); see [Setup with policy stores](#setup-with-policy-stores-mcp-roots) for multi-store configuration.
+
+**Response** (captured 2026-05-22 against `cedar-sandbox`):
+
 ```json
 {
-  "blue": "production",
-  "green": "staging",
-  "policies_added": [
-    { "policy_id": "contractor-read", "content": "permit (...);" }
-  ],
+  "blue": "cedar-sandbox",
+  "green": "cedar-sandbox",
+  "policies_added": [],
   "policies_removed": [],
-  "policies_modified": [
-    {
-      "policy_id": "editor-policy",
-      "can_update_in_place": false,
-      "changes": [{ "field": "principal", "in_place_allowed": false, "reason": "..." }],
-      "recommendation": "Requires delete-and-recreate."
-    }
-  ],
+  "policies_modified": [],
   "schema_diff": {
     "namespaces_added": [],
     "namespaces_removed": [],
@@ -956,21 +1049,11 @@ Structural and optional behavioral diff between two policy stores. Requires MCP 
     "summary": "No schema changes detected.",
     "risk_level": "safe"
   },
-  "behavioral_diff": [
-    {
-      "principal": "DocMgmt::User::\"contractor-1\"",
-      "action": "DocMgmt::Action::\"read\"",
-      "resource": "DocMgmt::Document::\"external-doc\"",
-      "blue_decision": "Deny",
-      "green_decision": "Allow",
-      "drifted": true
-    }
-  ],
-  "summary": "1 policy added, 1 modified (requires delete-recreate), schema unchanged."
+  "summary": "No changes detected between blue and green stores."
 }
 ```
 
-The `schema_diff` field carries the full structured output of [`cedar_diff_schema`](#cedar_diff_schema). When schemas differ, expect entries in `entity_types`, `actions`, or `common_types` with `risk` classifications attached.
+With real differences between the two stores, `policies_added` / `policies_removed` / `policies_modified` carry per-policy details (the same `can_update_in_place` + `changes` shape as `cedar_check_policy_change`), and `schema_diff` carries the full structured output of [`cedar_diff_schema`](#cedar_diff_schema). When `behavioral_test_requests` is supplied, the response also includes a `behavioral_diff` array of per-request `blue_decision` vs `green_decision` entries with a `drifted` boolean flagging differences.
 
 **When to use:** before promoting any policy changes from staging to production. The structural diff tells you what changed and how to deploy it. The behavioral diff tells you which authorization decisions would actually change.
 
@@ -989,13 +1072,21 @@ Validates a Cedar schema in isolation, without requiring any policies. Useful fo
 
 Exactly one of `schema` or `schema_ref` is required.
 
-**Output shape:**
+**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+
+```
+Validate the cedar-sandbox schema.
+```
+
+The assistant translates this to a cedar_validate_schema call with `schema_ref: "cedar://schema/cedar-sandbox"`.
+
+**Response** (captured 2026-05-22 against `cedar-sandbox`):
 
 ```json
 {
   "valid": true,
   "format": "cedarschema",
-  "namespaces": ["DocMgmt"],
+  "namespaces": ["MyApp"],
   "entity_type_count": 4,
   "action_count": 3,
   "common_type_count": 0,
@@ -1003,7 +1094,7 @@ Exactly one of `schema` or `schema_ref` is required.
 }
 ```
 
-When invalid:
+When invalid, the same shape carries `valid: false`, zeroed counts, and an `errors` array with `message` plus a `source_location` block:
 
 ```json
 {
@@ -1023,8 +1114,8 @@ When invalid:
 ```
 
 **When to use:**
-- before writing the first policy — confirm the schema you sketched parses correctly
-- before pushing schema changes to AVP via `PutSchema` — sanity-check syntactically
+- before writing the first policy, to confirm the schema you sketched parses correctly
+- before pushing schema changes to AVP via `PutSchema`, as a syntactic sanity check
 - as a fast check inside an agentic loop that's building a schema iteratively
 
 ---
@@ -1042,24 +1133,32 @@ Structural diff of two Cedar schemas with AVP-aware risk classification per chan
 
 The tool auto-detects `cedar://` URIs and resolves them via configured policy stores.
 
-**Output shape:**
+**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+
+```
+Diff the cedar-sandbox schema against a proposed schema that adds a verified_email: Bool attribute to User.
+```
+
+The assistant translates this to a cedar_diff_schema call with `blue: "cedar://schema/cedar-sandbox"` and `green` set to the sandbox schema text with `verified_email: Bool,` inserted into the User entity.
+
+**Response** (captured 2026-05-22 against `cedar-sandbox`):
 
 ```json
 {
   "namespaces_added": [],
   "namespaces_removed": [],
   "entity_types": {
-    "added": [{ "namespace": "DocMgmt", "name": "Tag" }],
+    "added": [],
     "removed": [],
     "modified": [
       {
-        "namespace": "DocMgmt",
+        "namespace": "MyApp",
         "name": "User",
         "attribute_changes": [
           {
-            "attr": "phone",
+            "attr": "verified_email",
             "change": "added",
-            "new_type": "String",
+            "new_type": "Bool",
             "risk": "breaking",
             "reason": "Required attribute added: existing entities/requests without this field will fail validation."
           }
@@ -1069,12 +1168,14 @@ The tool auto-detects `cedar://` URIs and resolves them via configured policy st
   },
   "actions": { "added": [], "removed": [], "modified": [] },
   "common_types": { "added": [], "removed": [], "modified": [] },
-  "summary": "Schema diff: 1 entity type(s) added, 1 entity type(s) modified (1 BREAKING).",
+  "summary": "Schema diff: 1 entity type(s) modified (1 BREAKING).",
   "risk_level": "breaking"
 }
 ```
 
-**Risk classification rules** — each change carries `risk: safe | review | breaking` plus a `reason` string. The rules:
+The `risk: "breaking"` classification fires because adding a *required* attribute to an existing entity type invalidates every entity payload that doesn't already carry the new field. To deploy this safely, make the attribute optional first, backfill values, then tighten to required.
+
+**Risk classification rules.** Each change carries `risk: safe | review | breaking` plus a `reason` string. The rules:
 
 | Change | Risk | Why |
 |---|---|---|
@@ -1093,7 +1194,7 @@ The tool auto-detects `cedar://` URIs and resolves them via configured policy st
 | Action `principalTypes` widened | review | Policy effect may change |
 | Action `principalTypes` narrowed | breaking | Existing policies for the removed type fail |
 | Action `resourceTypes` widened / narrowed | review / breaking | Same as principalTypes |
-| Action context attribute follows entity-attribute rules | — | — |
+| Action context attribute follows entity-attribute rules | (see above) | (see above) |
 | Common type added | safe | Nothing references it yet |
 | Common type removed | review | If unreferenced, safe; if referenced, breaking. Audit. |
 | Common type modified | review | Default to review; precise impact depends on references |
@@ -1101,9 +1202,9 @@ The tool auto-detects `cedar://` URIs and resolves them via configured policy st
 `risk_level` on the top-level result is the worst risk across all changes.
 
 **When to use:**
-- before promoting a schema change to production — see exactly what's at risk
+- before promoting a schema change to production, to see exactly what's at risk
 - as the structured backbone of `cedar_diff_policy_stores` (embedded automatically there)
-- inside an agentic policy review — let the agent reason about whether the schema change is deployable as-is
+- inside an agentic policy review, so the agent can reason about whether the schema change is deployable as-is
 
 ---
 
@@ -1116,10 +1217,28 @@ Validates a Cedar entities JSON array against a schema, returning per-entity err
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | `entities` | yes | JSON array of entity objects with `uid`, `attrs`, `parents` |
-| `schema` | no | Cedar schema (JSON or `.cedarschema`) — enables type validation. Without it, only JSON shape is checked. |
+| `schema` | no | Cedar schema (JSON or `.cedarschema`); when supplied, enables type validation. Without it, only JSON shape is checked. |
 | `schema_ref` | no | `cedar://schema/{store}` URI alternative to inline `schema` |
 
-**Output shape:**
+**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+
+```
+Validate the entities in cedar-sandbox against its schema.
+```
+
+The assistant translates this to a cedar_validate_entities call with the entities payload inline (read from `cedar-sandbox/entities/sample.json`) and `schema_ref: "cedar://schema/cedar-sandbox"`.
+
+**Response** (captured 2026-05-22 against `cedar-sandbox`):
+
+```json
+{
+  "valid": true,
+  "entity_count": 11,
+  "errors": []
+}
+```
+
+When some entities fail validation, `valid` flips to `false` and `errors` lists per-entity findings:
 
 ```json
 {
@@ -1127,10 +1246,10 @@ Validates a Cedar entities JSON array against a schema, returning per-entity err
   "entity_count": 1,
   "errors": [
     {
-      "entity_uid": "DocMgmt::User::\"alice\"",
+      "entity_uid": "MyApp::User::\"alice\"",
       "error_kind": "type_mismatch",
       "attribute": "name",
-      "message": "entity does not conform to the schema: in attribute `name` on `DocMgmt::User::\"alice\"`, type mismatch: value was expected to have type string, but it actually has type long: `42`"
+      "message": "entity does not conform to the schema: in attribute `name` on `MyApp::User::\"alice\"`, type mismatch: value was expected to have type string, but it actually has type long: `42`"
     }
   ]
 }
@@ -1140,8 +1259,8 @@ Validates a Cedar entities JSON array against a schema, returning per-entity err
 
 **When to use:**
 - when working with entity dumps from AVP `BatchGet` or custom entity stores
-- before running `cedar_authorize` on a request that includes user-supplied entities — catch shape issues early
-- inside a CI pipeline that publishes an entity snapshot — fail fast on drift
+- before running `cedar_authorize` on a request that includes user-supplied entities, to catch shape issues early
+- inside a CI pipeline that publishes an entity snapshot, to fail fast on drift
 
 ---
 
@@ -1153,7 +1272,7 @@ In addition to tools, the server registers three MCP prompts that clients surfac
 |--------|-----------|--------------|
 | `cedar-review-policy-diff` | `blue_store` (required), `green_store` (required), `focus` (optional) | Drives `cedar_diff_policy_stores` + `cedar_diff_schema`, summarizes structural changes plus risk-classified schema diff, and recommends whether to promote. |
 | `cedar-explain-denial` | `principal`, `action`, `resource`, `store` (all required) | Runs `cedar_authorize` against the store via `cedar://` refs, calls `cedar_explain` on the deciding policies, and produces a plain-English explanation of why the request was denied (or allowed) plus what would need to change. |
-| `cedar-avp-migration-checklist` | `namespace` (optional) | Returns a guided checklist for migrating an AVP policy store: schema validation, entity format detection, single-namespace constraint, template-linked policies, schema diff before `PutSchema`, behavioral diff before traffic shift. Informational only — no tool calls assumed. |
+| `cedar-avp-migration-checklist` | `namespace` (optional) | Returns a guided checklist for migrating an AVP policy store: schema validation, entity format detection, single-namespace constraint, template-linked policies, schema diff before `PutSchema`, behavioral diff before traffic shift. Informational only; no tool calls assumed. |
 
 In Claude Code these appear under the `/` slash menu when the server is configured. Other clients surface them differently per their UI conventions.
 
@@ -1188,14 +1307,14 @@ In stdio mode, your MCP client advertises its workspace folders to the server au
 
 Not every stdio client advertises the workspace as a root. Claude Code currently does not. If the server's working directory itself looks like a Cedar policy store (one of `schema.cedarschema`, `schema.json`, or a `policies/` directory exists), the server loads the cwd as a store named after the cwd's basename **synchronously at startup, before the transport accepts any client requests**. By the time the client can send anything (including `resources/list`), the store is already populated. This is the "user opens an MCP-enabled CLI inside their Cedar repo and expects the tools to work" path.
 
-When the MCP client later advertises roots via `listRoots()` (during the initialize handshake) or via a `notifications/roots/list_changed` message, those roots **replace** the sync-loaded cwd-fallback — a client that advertises is stating authoritative intent. When the client advertises zero roots, the sync-loaded cwd-fallback is preserved. The server also emits `notifications/resources/list_changed` after any reconciliation pass so cache-aware clients can refresh on the rare swap.
+When the MCP client later advertises roots via `listRoots()` (during the initialize handshake) or via a `notifications/roots/list_changed` message, those roots **replace** the sync-loaded cwd-fallback. A client that advertises roots is stating authoritative intent. When the client advertises zero roots, the sync-loaded cwd-fallback is preserved. The server also emits `notifications/resources/list_changed` after any reconciliation pass so cache-aware clients can refresh on the rare swap.
 
 In HTTP mode, there is no client workspace to negotiate with; the operator running the long-lived process is the authority. The `--root name=path` flag is how the deployer tells the server "expose this directory as a named policy store". Pass `--root` once per store. Every connected HTTP client sees the same set of roots.
 
 ### Endpoints
 
-- `POST /mcp` — the MCP Streamable HTTP endpoint. Each session gets a unique `Mcp-Session-Id` returned on the initialize response and required on subsequent requests.
-- `GET /health` — returns `{ status, transport, mode, active_sessions }` JSON. Useful for liveness probes.
+- `POST /mcp`: the MCP Streamable HTTP endpoint. Each session gets a unique `Mcp-Session-Id` returned on the initialize response and required on subsequent requests.
+- `GET /health`: returns `{ status, transport, mode, active_sessions }` JSON. Useful for liveness probes.
 
 ### Client configuration
 
@@ -1214,7 +1333,7 @@ await client.connect(transport);
 
 The HTTP server runs **one shared `storeManager`** across all concurrent sessions. The deployment model is "one server per policy-store set; many team clients all see the same roots." Every client connected to the same HTTP server reads the same `--root` mappings. For per-tenant isolation (different teams seeing different policy stores), deploy multiple processes behind a routing layer.
 
-Each MCP session DOES get its own `McpServer` instance — protocol state (initialized, message history, sampling) is per-session as the MCP spec requires.
+Each MCP session DOES get its own `McpServer` instance; protocol state (initialized, message history, sampling) is per-session as the MCP spec requires.
 
 ### Security
 
@@ -1284,7 +1403,7 @@ cedar://entities/production              <- merged entity JSON across all entiti
 cedar://entities/production/users-and-docs  <- a single entity file
 ```
 
-Both `policy_ref` and `schema_ref` accept these URIs in `cedar_validate` and `cedar_authorize`. Inline text still works — pass either form.
+Both `policy_ref` and `schema_ref` accept these URIs in `cedar_validate` and `cedar_authorize`. Inline text still works; pass either form.
 
 ### Error when no stores are configured
 
@@ -1358,14 +1477,14 @@ The Cedar project ships a CLI (`cedar`) for one-shot policy operations. This MCP
 | Evaluate a request | `cedar authorize` | `cedar_authorize` |
 | Format a policy file | `cedar format` | `cedar_format` |
 | Translate policy to JSON | `cedar translate` | `cedar_translate` |
-| Explain a policy | — | `cedar_explain` |
-| Check if a change needs delete-recreate | — | `cedar_check_policy_change` |
-| Generate a test request payload | — | `cedar_generate_sample_request` |
-| Plan a policy change from intent | — | `cedar_advise` |
-| Diff two policy stores with AVP classification | — | `cedar_diff_policy_stores` |
-| Validate a template policy | — | `cedar_validate_template` |
-| Instantiate a template (bind slots) | — | `cedar_link_template` |
-| List templates / links in a store | — | `cedar_list_templates`, `cedar_list_template_links` |
+| Explain a policy | (none) | `cedar_explain` |
+| Check if a change needs delete-recreate | (none) | `cedar_check_policy_change` |
+| Generate a test request payload | (none) | `cedar_generate_sample_request` |
+| Plan a policy change from intent | (none) | `cedar_advise` |
+| Diff two policy stores with AVP classification | (none) | `cedar_diff_policy_stores` |
+| Validate a template policy | (none) | `cedar_validate_template` |
+| Instantiate a template (bind slots) | (none) | `cedar_link_template` |
+| List templates / links in a store | (none) | `cedar_list_templates`, `cedar_list_template_links` |
 
 **When to use the CLI:** one-shot scripts, CI pipelines, or shell automation.
 
@@ -1405,7 +1524,7 @@ The upstream [Cedar documentation](https://docs.cedarpolicy.com) and [Cedar poli
 
 The server looked for `schema.cedarschema` or `schema.json` in the root directory but found neither. Check that your policy store directory has one of these files at the root level, not inside the `policies/` subdirectory.
 
-**"store X not found — no roots configured"**
+**"store X not found, no roots configured"**
 
 You passed a `cedar://` reference or a store name to a tool, but no MCP roots are configured. Add a `roots` entry to your MCP client config (see [Setup with policy stores](#setup-with-policy-stores-mcp-roots)).
 
@@ -1437,7 +1556,7 @@ The server names stores after the last segment of their file path. If two roots 
 | `@modelcontextprotocol/sdk` | 1.29.0 |
 | MCP clients tested | Claude Code, Claude Desktop |
 
-Other MCP clients that support the MCP 1.0 protocol should work for all tools except `cedar_advise`, which additionally requires sampling support.
+Other MCP clients that support the MCP 1.0 protocol should work with every tool. All 17 tools are deterministic; none of them require the MCP `sampling/createMessage` capability. `cedar_advise` is also deterministic in the current design (kickoff-08 pivoted it from a sampling-based planner to a structured context bundle, so the calling assistant produces the actual plan from the bundle).
 
 ---
 
@@ -1454,6 +1573,15 @@ Cedar's official CLI ships these as 11 verification subcommands under `cedar sym
 
 **Future direction:** if upstream Cedar exposes `cedar-policy-symcc` through `@cedar-policy/cedar-wasm`, the equivalent tools land here directly. Otherwise a companion package (e.g. `cedar-mcp-server-analyze`) that shells out to a locally-installed `cedar symcc` is the most likely path. No timeline.
 
+### Multi-store under stdio
+
+Stdio mode loads at most one synchronous cwd-fallback store (named after the cwd's basename) plus any roots the MCP client advertises via `listRoots()`. Claude Code does not currently advertise the workspace as a root, so in practice stdio is single-store: the cwd. To work with multiple Cedar policy stores from one client session, two options:
+
+1. Run the server in HTTP mode with one `--root name=path` flag per store, and point your client at the HTTP endpoint. All connected clients see the same multi-store set.
+2. Register the same `cedar-mcp-server` binary multiple times in your client's MCP configuration, each with its own working directory (or each pointing at a different cwd via the client's per-server config). Each instance becomes a separate MCP server with its own single store.
+
+The pure-stdio multi-store-from-cwd model (one process, multiple stores discovered without `--root` or `listRoots()`) is not supported. Tracked for v1.1.
+
 ---
 
 ## Versioning policy
@@ -1468,9 +1596,9 @@ The current version is `0.0.1` (pre-release). Pin to an exact version during the
 
 See [`examples/`](./examples/) for three full working scenarios with schemas, policies, entities, and copy-paste prompts:
 
-- [`rbac-document-management`](./examples/rbac-document-management/) — role membership, `forbid` + `unless`, default deny
-- [`abac-multi-tenant`](./examples/abac-multi-tenant/) — attribute conditions, `contains()`, optional attribute guards, plan-tier gating
-- [`api-gateway-path-routing`](./examples/api-gateway-path-routing/) — path matching with `like`, depth limiting via negation, method restriction
+- [`rbac-document-management`](./examples/rbac-document-management/): role membership, `forbid` + `unless`, default deny
+- [`abac-multi-tenant`](./examples/abac-multi-tenant/): attribute conditions, `contains()`, optional attribute guards, plan-tier gating
+- [`api-gateway-path-routing`](./examples/api-gateway-path-routing/): path matching with `like`, depth limiting via negation, method restriction
 
 Each example includes a `run.ts` that exercises all tools offline without an MCP client.
 
