@@ -236,6 +236,8 @@ See [`avp-cli`](https://github.com/Pigius/avp-cli) for a companion CLI that hand
 
 ## Tool details
 
+Every example below assumes a Cedar workspace store called `cedar-sandbox`: a directory with `schema.cedarschema` declaring a `MyApp` namespace (User, Role, Document, Folder entities; read / write / delete actions), per-file policies in `policies/` (`admin.cedar`, `editor.cedar`, `viewer.cedar`), and an `entities/sample.json` containing alice (admin), bob (editor), charlie (viewer) plus a `doc-public` document. Substitute your own store name in any example prompt that mentions `cedar-sandbox`. For complete worked fixtures, see [`examples/`](./examples/).
+
 ### `cedar_validate`
 
 Validates Cedar policies with or without a schema. Two modes:
@@ -264,13 +266,13 @@ The response's `validation_mode` field tells you which mode ran.
 - `"syntax_only"`: parser-only. Skips workspace auto-discovery entirely and ignores any inline schema, `schema_ref`, or `store` you pass alongside it (the user said parser-only; the tool honors that literally). Use when the user explicitly says they have no schema, or for a fast parse-only sanity check inside a Cedar-workspace cwd.
 - `"syntax_and_schema"`: require a schema. If neither an inline schema nor a workspace schema is resolvable, the response is an error rather than a silent drop to syntax-only. Use when you want to be sure the type-check ran.
 
-**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+**Example prompt** (paste into Claude Code from a Cedar workspace):
 
 ```
 Use cedar_validate on: permit (prinicpal in MyApp::Role::"admin", action, resource);
 ```
 
-**Response** (captured 2026-05-22 against `cedar-sandbox`):
+**Response:**
 
 ```json
 {
@@ -359,7 +361,7 @@ Evaluates an authorization request locally against your policies and entities. R
 
 **Workspace auto-discovery.** When any of `policies` / `schema` / `entities` (and their `_ref` siblings) are omitted and exactly one MCP root is loaded, the tool reads each missing input from that store: `policies/*.cedar` files (per-policy basenames preserved as determining-policy IDs), `schema.cedarschema` or `schema.json`, and the entities under `entities/*.json` merged into one array. The response's `auto_discovered` field reports which store satisfied each missing input. With multiple stores loaded, the response is an actionable error listing the candidate names. Pass `store: "<name>"` to choose one.
 
-**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+**Example prompt** (paste into Claude Code from a Cedar workspace):
 
 ```
 Can alice read doc-public?
@@ -367,7 +369,7 @@ Can alice read doc-public?
 
 The assistant translates this to a cedar_authorize call with `principal: MyApp::User::"alice"`, `action: MyApp::Action::"read"`, `resource: MyApp::Document::"doc-public"`. Policies, schema, and entities all auto-discover from the sandbox.
 
-**Response** (captured 2026-05-22 against `cedar-sandbox`):
+**Response:**
 
 ```json
 {
@@ -438,7 +440,7 @@ Runs N authorization requests through ONE policy set and returns the decision ma
 | `entities` | no | Shared entities JSON applied when individual requests omit their own `entities` field |
 | `entities_ref` | no | `cedar://` URI to load shared entities |
 
-**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+**Example prompt** (paste into Claude Code from a Cedar workspace):
 
 ```
 Run a batch of three authorizations against the sandbox: alice/read/doc-public, bob/write/doc-public, charlie/delete/doc-public.
@@ -446,7 +448,7 @@ Run a batch of three authorizations against the sandbox: alice/read/doc-public, 
 
 The assistant translates this to a cedar_authorize_batch call referencing `cedar://policies/cedar-sandbox`, `cedar://schema/cedar-sandbox`, and `cedar://entities/cedar-sandbox`, with the three requests inline.
 
-**Response** (captured 2026-05-22 against `cedar-sandbox`):
+**Response:**
 
 ```json
 {
@@ -510,7 +512,7 @@ Formats Cedar policy text to canonical style. Useful before committing policy fi
 Format this Cedar: permit(principal in MyApp::Role::"admin",action,resource);
 ```
 
-**Response** (captured 2026-05-22):
+**Response:**
 
 ```json
 {
@@ -543,7 +545,7 @@ Translates between Cedar text and JSON formats for policies and schemas.
 Translate to JSON: permit (principal, action, resource);
 ```
 
-**Response** (captured 2026-05-22):
+**Response:**
 
 ```json
 {
@@ -573,13 +575,13 @@ Explains a Cedar policy in plain English with pattern detection.
 
 **Workspace auto-discovery.** When `schema` and `schema_ref` are both omitted and exactly one MCP root is loaded, the tool reads the schema from that store. The response's `auto_discovered.schema_from` field names the source store. The schema is optional for explain, so a single store with no schema file still produces a result. With multiple stores loaded and no `store` parameter, the response is an actionable error listing the candidate names.
 
-**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+**Example prompt** (paste into Claude Code from a Cedar workspace):
 
 ```
 Explain this policy: permit (principal in MyApp::Role::"admin", action, resource);
 ```
 
-**Response** (captured 2026-05-22 against `cedar-sandbox`):
+**Response:**
 
 ```json
 {
@@ -634,7 +636,7 @@ Check this change: editor.cedar narrows from `action in [read, write]` to `actio
 
 The assistant translates this to a cedar_check_policy_change call with `old_policy` = the read+write permit, `new_policy` = the read-only permit (both in the MyApp namespace).
 
-**Response** (captured 2026-05-22):
+**Response:**
 
 ```json
 {
@@ -703,7 +705,7 @@ Generate a sample request that would be allowed by: permit (principal in MyApp::
 
 The assistant translates this to a cedar_generate_sample_request call with the policy text and the cedar-sandbox schema.
 
-**Response** (captured 2026-05-22 against `cedar-sandbox`):
+**Response:**
 
 ```json
 {
@@ -754,7 +756,7 @@ This pivot replaced the original sampling-based `cedar_advise` after dogfooding 
 | `intent` | yes | Natural-language description of the desired authorization behavior, kept verbatim from the user |
 | `store_ref` | no | Store name or `cedar://` URI (e.g. `cedar://policies/production` or `production`); when supplied, the bundle includes `schema_summary`, `policy_inventory` with full policy text, and `patterns_detected_in_store` counts grounded in the actual store. Omit when exactly one store is loaded and the bundle will auto-resolve to it (the response's `auto_discovered.store_from` field reports `"single_loaded_store"`). With multiple stores loaded and no `store_ref`, the response sets `store_status: "ambiguous"` and lists the candidate names under `available_stores`. |
 
-**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+**Example prompt** (paste into Claude Code from a Cedar workspace):
 
 ```
 I want to make editors read-only, admins exempt. Plan it.
@@ -762,7 +764,7 @@ I want to make editors read-only, admins exempt. Plan it.
 
 The assistant translates this to a cedar_advise call with `intent: "Make editors read-only, admins exempt."` and no `store_ref` (cedar-sandbox is the only loaded store, so it auto-resolves).
 
-**Response (abridged)** (captured 2026-05-22 against `cedar-sandbox`):
+**Response (abridged):**
 
 ```json
 {
@@ -856,7 +858,7 @@ Validates a Cedar template policy against a schema. Templates use slot placehold
 | `template` | yes | Cedar template text, e.g. `permit(principal == ?principal, action == ..., resource == ?resource);` |
 | `schema` | yes | Cedar schema (JSON or `.cedarschema` format) |
 
-**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+**Example prompt** (paste into Claude Code from a Cedar workspace):
 
 ```
 Validate this Cedar template against the sandbox schema:
@@ -865,7 +867,7 @@ permit (principal == ?principal, action == MyApp::Action::"read", resource == ?r
 
 The assistant translates this to a cedar_validate_template call with the template text and the inline schema from `cedar-sandbox/schema.cedarschema`.
 
-**Response** (captured 2026-05-22 against `cedar-sandbox`):
+**Response:**
 
 ```json
 {
@@ -893,14 +895,14 @@ Instantiates a Cedar template by binding its `?principal` and/or `?resource` slo
 | `resource` | no | Entity reference for the `?resource` slot, e.g. `App::Document::"doc-42"` |
 | `schema` | no | Cedar schema; if provided, the linked policy is validated against it |
 
-**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+**Example prompt** (paste into Claude Code from a Cedar workspace):
 
 ```
 Link this template with alice + doc-public, validated against the sandbox schema:
 permit (principal == ?principal, action == MyApp::Action::"read", resource == ?resource);
 ```
 
-**Response** (captured 2026-05-22 against `cedar-sandbox`):
+**Response:**
 
 ```json
 {
@@ -944,13 +946,13 @@ my-store/
 |-----------|----------|-------------|
 | `store` | yes | Store name (must be a configured MCP root) |
 
-**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+**Example prompt** (paste into Claude Code from a Cedar workspace):
 
 ```
 List templates in the cedar-sandbox store.
 ```
 
-**Response** (captured 2026-05-22 against `cedar-sandbox`):
+**Response:**
 
 ```json
 {
@@ -987,13 +989,13 @@ Lists all template-linked policy instances in a store. Links live in a `template
 |-----------|----------|-------------|
 | `store` | yes | Store name (must be a configured MCP root) |
 
-**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+**Example prompt** (paste into Claude Code from a Cedar workspace):
 
 ```
 List template links in the cedar-sandbox store.
 ```
 
-**Response** (captured 2026-05-22 against `cedar-sandbox`):
+**Response:**
 
 ```json
 {
@@ -1022,7 +1024,7 @@ Structural and optional behavioral diff between two policy stores. Requires MCP 
 
 **Output shape:**
 
-**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+**Example prompt** (paste into Claude Code from a Cedar workspace):
 
 ```
 Diff the cedar-sandbox store against itself (smoke test the tool shape).
@@ -1030,7 +1032,7 @@ Diff the cedar-sandbox store against itself (smoke test the tool shape).
 
 The assistant translates this to a cedar_diff_policy_stores call with `blue: "cedar-sandbox"`, `green: "cedar-sandbox"`. A real promotion run would compare distinct stores (e.g. `blue: "production"`, `green: "staging"`); see [Setup with policy stores](#setup-with-policy-stores-mcp-roots) for multi-store configuration.
 
-**Response** (captured 2026-05-22 against `cedar-sandbox`):
+**Response:**
 
 ```json
 {
@@ -1071,7 +1073,7 @@ Validates a Cedar schema in isolation, without requiring any policies. Useful fo
 
 Exactly one of `schema` or `schema_ref` is required.
 
-**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+**Example prompt** (paste into Claude Code from a Cedar workspace):
 
 ```
 Validate the cedar-sandbox schema.
@@ -1079,7 +1081,7 @@ Validate the cedar-sandbox schema.
 
 The assistant translates this to a cedar_validate_schema call with `schema_ref: "cedar://schema/cedar-sandbox"`.
 
-**Response** (captured 2026-05-22 against `cedar-sandbox`):
+**Response:**
 
 ```json
 {
@@ -1132,7 +1134,7 @@ Structural diff of two Cedar schemas with AVP-aware risk classification per chan
 
 The tool auto-detects `cedar://` URIs and resolves them via configured policy stores.
 
-**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+**Example prompt** (paste into Claude Code from a Cedar workspace):
 
 ```
 Diff the cedar-sandbox schema against a proposed schema that adds a verified_email: Bool attribute to User.
@@ -1140,7 +1142,7 @@ Diff the cedar-sandbox schema against a proposed schema that adds a verified_ema
 
 The assistant translates this to a cedar_diff_schema call with `blue: "cedar://schema/cedar-sandbox"` and `green` set to the sandbox schema text with `verified_email: Bool,` inserted into the User entity.
 
-**Response** (captured 2026-05-22 against `cedar-sandbox`):
+**Response:**
 
 ```json
 {
@@ -1219,7 +1221,7 @@ Validates a Cedar entities JSON array against a schema, returning per-entity err
 | `schema` | no | Cedar schema (JSON or `.cedarschema`); when supplied, enables type validation. Without it, only JSON shape is checked. |
 | `schema_ref` | no | `cedar://schema/{store}` URI alternative to inline `schema` |
 
-**Example prompt** (paste into Claude Code from a Cedar workspace like `~/cedar-sandbox`):
+**Example prompt** (paste into Claude Code from a Cedar workspace):
 
 ```
 Validate the entities in cedar-sandbox against its schema.
@@ -1227,7 +1229,7 @@ Validate the entities in cedar-sandbox against its schema.
 
 The assistant translates this to a cedar_validate_entities call with the entities payload inline (read from `cedar-sandbox/entities/sample.json`) and `schema_ref: "cedar://schema/cedar-sandbox"`.
 
-**Response** (captured 2026-05-22 against `cedar-sandbox`):
+**Response:**
 
 ```json
 {
