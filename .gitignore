@@ -17,7 +17,22 @@ JOURNAL.md
 SCRATCH.md
 scratch/
 private/
-docs/
+
+# docs/ holds both private analysis (e.g. ecosystem notes) and the
+# public per-section documentation split out of the main README. Default
+# is to ignore everything in docs/, then explicitly negate the user-facing
+# files. (Negation only works because the pattern is `docs/*` not `docs/` —
+# git can't re-include a file under an excluded directory.)
+docs/*
+!docs/getting-started.md
+!docs/tools.md
+!docs/workflows.md
+!docs/prompts.md
+!docs/http-mode.md
+!docs/migrating.md
+!docs/cedar-primer.md
+!docs/troubleshooting.md
+
 *.private.md
 *.scratch.md
 kickoff-*.md
