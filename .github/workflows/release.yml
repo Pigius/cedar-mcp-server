@@ -1,9 +1,18 @@
 name: Release
 
+# Auto-publish on `v*.*.*` tag push is DISABLED while Daniel is doing
+# manual local npm publish. Re-enable after Trusted Publishing is
+# configured on the cedar-mcp-server npm package (avoids the NPM_TOKEN +
+# 2FA-bypass chicken-and-egg that bit the v1.0.0 release).
+#
+# To trigger this workflow now, go to the GitHub Actions UI and click
+# "Run workflow" on the Release workflow page. The publish step still
+# requires a valid NPM_TOKEN with bypass-2FA OR OIDC Trusted Publishing.
 on:
-  push:
-    tags:
-      - "v*.*.*"
+  workflow_dispatch:
+  # push:
+  #   tags:
+  #     - "v*.*.*"
 
 jobs:
   publish:
